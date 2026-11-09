@@ -1,5 +1,4 @@
 import hashlib
-import hmac
 
 import pandas as pd
 import streamlit as st
@@ -21,36 +20,12 @@ def read_live(repo, credential_id, _token):
         return market(data)
 
 
-def unlock(expected):
-    previous = st.session_state.get("ffa_viewer_digest", "")
-    if hmac.compare_digest(previous, expected):
-        if st.sidebar.button("退出行情"):
-            st.session_state.pop("ffa_viewer_digest", None)
-            st.rerun()
-        return True
-    with st.form("ffa_viewer", clear_on_submit=True):
-        key = st.text_input("行情访问码", type="password")
-        if st.form_submit_button("查看真实行情"):
-            digest = hashlib.sha256(key.encode()).hexdigest()
-            if hmac.compare_digest(digest, expected):
-                st.session_state["ffa_viewer_digest"] = digest
-                st.rerun()
-            st.error("访问码无效。")
-    return False
-
-
 def main():
     try:
         live = st.secrets.get("mode") == "live"
     except FileNotFoundError:
         live = False
     if live:
-        expected = st.secrets.get("viewer_access_hash", "")
-        if len(expected) != 64:
-            st.error("行情访问尚未配置。")
-            return
-        if not unlock(expected):
-            return
         try:
             token = st.secrets["github_reader_token"]
             fixed, rolling, _ = read_live(st.secrets["github_repo"], hashlib.sha256(token.encode()).hexdigest(), token)
