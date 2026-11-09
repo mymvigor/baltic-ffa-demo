@@ -10,7 +10,7 @@ from ffa.model import VESSELS
 from ffa.store import connect, market
 from ffa.ui import basis_and_slope, curve_moves, curves, prices, spreads
 
-st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
 BENCHMARKS = {
     "CAPE": ("C5TC",),
@@ -21,7 +21,10 @@ BENCHMARKS = {
 
 STYLE = """
 <style>
-[data-testid="stMainBlockContainer"] {max-width: 1360px; padding-top: 2rem; padding-bottom: 4rem;}
+[data-testid="stMainBlockContainer"] {max-width: 1360px; padding: 2rem clamp(1.25rem, 3.25vw, 3.5rem) 4rem;}
+@media (min-width: 768px) {
+    [data-testid="stSidebar"][aria-expanded="true"] { width: 216px !important; min-width: 216px !important; }
+}
 [data-testid="stSidebarContent"] {border-right: 1px solid #e2e9ef;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
 .ffa-hero {background: linear-gradient(112deg,#101c30,#17354a); border:1px solid #263e53;
@@ -91,7 +94,7 @@ def main():
     st.markdown(
         f'<div class="ffa-hero"><div class="ffa-kicker">Market monitor / Dry bulk</div>'
         f'<h1 class="ffa-title">{VESSELS[vessel]}</h1>'
-        f'<div class="ffa-meta">{source} &nbsp;·&nbsp; Latest class assessment {quote_day:%d %b %Y}</div></div>',
+        f'<div class="ffa-meta">{source} &nbsp;·&nbsp; Latest class quote {quote_day:%d %b %Y}</div></div>',
         unsafe_allow_html=True,
     )
     products = sorted(market_data["product"].unique())

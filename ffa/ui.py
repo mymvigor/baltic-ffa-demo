@@ -109,7 +109,7 @@ def prices(local, days, key):
         st.info("No price series are available.")
         return
 
-    left, middle, right = st.columns([1, 1, 2.4])
+    left, right = st.columns([1, 2.2])
     modes = [mode for mode in ("Rolling", "Fixed") if any(k[6] == mode for k in local)]
     mode = left.radio("Series", modes, horizontal=True, key=key + "_mode")
     all_choices = [k for k in local if k[6] == mode]
@@ -120,7 +120,7 @@ def prices(local, days, key):
     preferred = rolling_leg(local, "+1MON") if mode == "Rolling" else None
     preferred = preferred or all_choices[0]
     units = list(dict.fromkeys(k[3:5] for k in [preferred, *all_choices]))
-    unit = middle.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
+    unit = left.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
                             key=key + mode + "_price_unit") if len(units) > 1 else units[0]
     choices = [k for k in all_choices if k[3:5] == unit]
     selected = right.multiselect("Contracts", choices, default=[preferred if preferred in choices else choices[0]],
@@ -170,12 +170,12 @@ def curves(data, key):
         st.info("No forward assessments with confirmed delivery periods.")
         return None
 
-    left, middle, right = st.columns([1.1, .8, 2.2])
+    left, right = st.columns([1, 1.65])
     tenors = [tenor for tenor in TENORS if tenor in set(data.tenor)]
     tenor = left.radio("Delivery", tenors, format_func=TENORS.get, horizontal=True, key=key + "_curve_tenor")
     data = data[data.tenor.eq(tenor)]
     units = list(data[["currency", "unit"]].drop_duplicates().itertuples(index=False, name=None))
-    unit = middle.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
+    unit = left.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
                             key=key + "_curve_unit") if len(units) > 1 else units[0]
     data = data[data.currency.eq(unit[0]) & data.unit.eq(unit[1])]
     days = sorted(data.quote_day.unique(), reverse=True)
@@ -201,6 +201,7 @@ def curves(data, key):
             marker=dict(size=6 if index == 0 else 4),
             hovertemplate="%{x}<br>%{y:,.3~f}<extra>%{fullData.name}</extra>",
         )
+    st.caption(f"Latest {TENORS[tenor].lower()} forward assessment · {days[0]:%d %b %Y}")
     display(fig, key + "_curve_chart")
     return data, tenor, unit, days, max(selected)
 
