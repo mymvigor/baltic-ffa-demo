@@ -1,0 +1,296 @@
+import re
+
+import pandas as pd
+import streamlit as st
+
+from .analytics import compare, delivery_label, indicators, timeline, unit_label
+from .ui import VALUE_HOVER, chart, date_axis, display, draw_segments, mark_rolls, rolling_leg, section, series_name
+
+
+def prepared(rows, days):
+    data = timeline(rows, days)
+    data["Delivery"] = [delivery_label(t, d) if pd.notna(t) else "—"
+                        for t, d in zip(data.tenor, data.delivery_start)]
+    return data
+
+
+def draw_history(fig, data, column, name, index):
+    draw_segments(fig, data, column, name, index, VALUE_HOVER + "<br>Delivery %{customdata[0]}", ["Delivery"])
+    if column == "price":
+        mark_rolls(fig, data, ["Delivery"])
+
+
+def paired(a, b, divide=False, align=False):
+    return compare(a, b, divide=divide, align=align, window=20)
+
+
+def show_pair(fig, data, column, name, index):
+    hover = VALUE_HOVER + "<br>%{customdata[0]} · %{customdata[1]}"
+    draw_segments(fig, data, column, name, index, hover, ["a_period", "b_period"])
+    if column == "price":
+        mark_rolls(fig, data, ["a_period", "b_period"])
+
+
+def show(fig, bounds, key, empty_message):
+    if fig.data:
+        date_axis(fig, bounds)
+        display(fig, key)
+    else:
+        st.info(empty_message)
+
+
+def spot_comparison(local, days, bounds, key):
+    section(2, "Spot vs BFA", "Compare forward assessments with their underlying spot benchmark.")
+    choices = [leg for leg in local if leg[2] == "BFA"]
+    spots = [leg for leg in local if leg[2] == "Spot" and any(leg[3:5] == forward[3:5] for forward in choices)]
+    if not spots:
+        st.info("No same-benchmark spot and forward series share a quote unit.")
+        return {}
+    spot = st.selectbox("Spot series", spots, format_func=lambda leg: unit_label(*leg[3:5]),
+                        key=key + "_basis_spot") if len(spots) > 1 else spots[0]
+    unit = spot[3:5]
+    choices = [leg for leg in choices if leg[3:5] == unit]
+    default = rolling_leg(local, "+1MON", unit) or choices[0]
+    left, right = st.columns([2, 1])
+    selected = left.multiselect("BFA contracts", choices, default=[default], max_selections=4,
+                                format_func=lambda leg: series_name(leg, local), key=key + "_basis_legs_" + str(unit))
+    measure = right.radio("Basis display", ["Price difference", "Percent"], horizontal=True, key=key + "_basis_measure")
+    if not selected:
+        st.info("Select a BFA contract to compare with spot.")
+        return {}
+
+    window = slice(*bounds)
+    spot_data = prepared(local[spot][1], days)
+    price_fig = chart(unit_label(*unit))
+    basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=275)
+    draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
+    latest = []
+    basis = {}
+    for index, leg in enumerate(selected):
+        name = series_name(leg, local)
+        forward = prepared(local[leg][1], days)
+        draw_history(price_fig, forward.loc[window], "price", "BFA · " + name, index + (index > 0))
+        seen = forward.loc[window].price.last_valid_index()
+        if seen is not None:
+            latest.append(f"{name} {seen:%d %b %Y}")
+        result = paired(forward, spot_data)
+        basis[f"{name} − Spot"] = (unit, result)
+        view = result.loc[window].copy()
+        view["percent"] = 100 * view.price / view.b.where(view.b.gt(0))
+        show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", name, index)
+
+    spot_date = spot_data.loc[window].price.last_valid_index()
+    if spot_date is not None:
+        latest.insert(0, f"Spot {spot_date:%d %b %Y}")
+    if latest:
+        st.caption("Latest visible quotes · " + " · ".join(latest))
+    show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.")
+    st.markdown("**BFA − Spot**")
+    show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range. Basis is unavailable.")
+    return basis
+
+
+def calendar_spreads(local, days, bounds, key):
+    section(4, "Calendar Spreads", "Near leg minus far leg, using matched assessment dates.")
+    legs = [leg for leg in local if leg[2] == "BFA"]
+    if len(legs) < 2:
+        st.info("At least two forward contracts are needed.")
+        return {}
+
+    presets = {"Custom legs": None}
+    for tenor, suffix, label in [
+        ("month", "MON", "M+1 − M+2"),
+        ("quarter", "Q", "Q+1 − Q+2"),
+        ("year", "CAL", "Cal+1 − Cal+2"),
+    ]:
+        near = next((leg for leg in legs if leg[6] == "Rolling" and leg[5] == tenor
+                     and re.search(r"\+1" + suffix + r"(?:#\d+)?$", leg[-1])), None)
+        far = next((leg for leg in legs if near and leg[3:5] == near[3:5] and leg[6] == "Rolling"
+                    and leg[5] == tenor and re.search(r"\+2" + suffix + r"(?:#\d+)?$", leg[-1])), None)
+        if near and far:
+            presets[label] = near, far
+
+    choice = st.selectbox("Spread", list(presets), index=int(len(presets) > 1), key=key + "_calendar_preset")
+    if choice == "Custom legs":
+        left, right = st.columns(2)
+        near = left.selectbox("Near leg", legs, format_func=lambda leg: series_name(leg, local),
+                              key=key + "_calendar_near")
+        matches = [leg for leg in legs if leg != near and leg[3:5] == near[3:5]]
+        if not matches:
+            st.info("No compatible far leg.")
+            return {}
+        far = right.selectbox("Far leg", matches, format_func=lambda leg: series_name(leg, local),
+                              key=key + "_calendar_far_" + str(near))
+    else:
+        near, far = presets[choice]
+
+    unit = near[3:5]
+    a, b = (prepared(local[leg][1], days) for leg in (near, far))
+    ordered = a.delivery_start.lt(b.delivery_start)
+    result = paired(a, b)
+    result["price"] = result.price.where(ordered)
+    name = f"{series_name(near, local)} − {series_name(far, local)}"
+    fig = chart(unit_label(*unit), height=315)
+    show_pair(fig, result.loc[bounds[0]:bounds[1]], "price", name, 0)
+    show(fig, bounds, key + "_calendar_chart", "No same-day quotes with confirmed near-before-far delivery in this range.")
+    return {name: (unit, result)}
+
+
+def comparison_workspace(series, local, basis, calendar, bounds, key):
+    section(5, "Comparison Workspace", "Build a view from Spot, Rolling, Fixed and the basis or spread studies above.")
+    scope, method_column, study = st.columns(3)
+    universe = scope.selectbox("Universe", ["Current benchmark", "All benchmarks"], key=key + "_compare_universe")
+    method = method_column.selectbox("View", ["Overlay", "Spread", "Ratio", "Rebased to 100"], key=key + "_compare_view")
+    metrics = {"Price or level": "price", "1-assessment change (%)": "change",
+               "5-assessment mean": "ma5", "20-assessment mean": "ma20"}
+    metric = study.selectbox("Measure", list(metrics), key=key + "_compare_metric") if method == "Overlay" else "Price or level"
+    available = local if universe == "Current benchmark" else series
+    derived = {} if method == "Rebased to 100" or metric != "Price or level" else {**basis, **calendar}
+    if not available:
+        st.info("No comparison series are available.")
+        return
+    preferred = rolling_leg(local, "+1MON") or next(iter(available))
+    units = list(dict.fromkeys([preferred[3:5], *(leg[3:5] for leg in available)]))
+    enforce_unit = method != "Rebased to 100" and metric != "1-assessment change (%)"
+    unit = st.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
+                        key=key + "_compare_unit") if enforce_unit and len(units) > 1 else units[0]
+    candidates = [leg for leg in available if not enforce_unit or leg[3:5] == unit]
+    studies = [name for name, (measure_unit, _) in derived.items() if not enforce_unit or measure_unit == unit]
+    spot = next((leg for leg in candidates if leg in local and leg[2] == "Spot"), None)
+    defaults = [preferred] if preferred in candidates else candidates[:1]
+    if spot and spot not in defaults:
+        defaults.append(spot)
+
+    def name(item):
+        if isinstance(item, str):
+            return item
+        return f"{series_name(item, available, full=True)} · {item[2] if item[2] == 'Spot' else item[6]}"
+
+    pair = method in {"Spread", "Ratio"}
+    selected = st.multiselect("Series", [*candidates, *studies], default=defaults,
+                              max_selections=2 if pair else 5, format_func=name,
+                              key=key + f"_compare_legs_{universe}_{method}_{metric}_{unit}")
+    if not selected or (pair and len(selected) != 2):
+        st.info("Select two series for this comparison." if pair else "Select one or more series.")
+        return
+
+    dates = {}
+    for item in selected:
+        if isinstance(item, str):
+            dates[item] = derived[item][1].index
+        else:
+            dates[item] = pd.DatetimeIndex(sorted(
+                {day for leg, (_, rows) in series.items() if leg[:2] == item[:2] and leg[3:5] == item[3:5]
+                 for day in rows.quote_day}
+            ))
+    window = slice(*bounds)
+    if pair:
+        a, b = selected
+        align = not isinstance(a, str) and not isinstance(b, str) and a[0] != b[0] and a[2] == b[2] == "BFA"
+        common_days = dates[a].union(dates[b])
+        panels = []
+        for item in selected:
+            if not isinstance(item, str):
+                panels.append(prepared(available[item][1], common_days))
+                continue
+            data = derived[item][1].reindex(common_days).copy()
+            data["segment"] = data.segment.ffill().fillna(0)
+            data["tenor"] = "study"
+            data["delivery_start"] = pd.NaT
+            data["delivery_end"] = pd.NaT
+            panels.append(data)
+        result = paired(*panels, divide=method == "Ratio", align=align).loc[window]
+        fig = chart("Ratio" if method == "Ratio" else unit_label(*unit))
+        show_pair(fig, result, "price", f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", 0)
+        if align:
+            st.caption("Cross-vessel BFA legs are matched by date and actual delivery period.")
+    else:
+        column = metrics[metric]
+        label = "Index (100 = base)" if method == "Rebased to 100" else "%" if column == "change" else unit_label(*unit)
+        fig = chart(label)
+        raw = {item: prepared(available[item][1], dates[item]) for item in selected if not isinstance(item, str)}
+        base_day = None
+        if method == "Rebased to 100":
+            overlap = pd.concat([data.loc[window].price for data in raw.values()], axis=1)
+            common = overlap.gt(0).all(axis=1)
+            if not common.any():
+                st.info("Rebasing needs a common date with positive prices for every selected series.")
+                return
+            base_day = common[common].index[0]
+            st.caption(f"Base date · {base_day:%d %b %Y}")
+        for index, item in enumerate(selected):
+            if isinstance(item, str):
+                show_pair(fig, derived[item][1].loc[window], "price", name(item), index)
+                continue
+            data = raw[item]
+            values = indicators(data).loc[window].copy() if column != "price" else data.loc[window].copy()
+            if column == "change":
+                values[column] *= 100
+            if base_day is not None:
+                values = values.loc[base_day:].copy()
+                values[column] = 100 * values[column] / data.loc[base_day, "price"]
+            draw_history(fig, values, column, name(item), index)
+
+    show(fig, bounds, key + "_workspace", "No matched prices or sufficient history for the selected view.")
+
+
+def historical_context(local, days, basis, calendar, bounds, key):
+    section(7, "Historical Context", "Place the selected basis or calendar spread in its own observed history.")
+    spot = next((leg for leg in local if leg[2] == "Spot"), None)
+    front = rolling_leg(local, "+1MON", spot[3:5]) if spot else None
+    if spot:
+        with st.expander("Spot seasonality"):
+            visible = local[spot][1]
+            visible = visible[visible.quote_day.between(*bounds)].copy()
+            monthly = visible.groupby(visible.quote_day.dt.to_period("M")).price.agg(["mean", "count"])
+            monthly = monthly[monthly["count"].ge(10)]
+            if monthly.index.year.nunique() < 2:
+                st.info("Select at least two years with spot history. Monthly averages require 10 or more assessments.")
+            else:
+                fig = chart(unit_label(*spot[3:5]), height=290)
+                for year, values in monthly.groupby(monthly.index.year):
+                    averages = values.set_axis(values.index.month)["mean"].reindex(range(1, 13))
+                    fig.add_scatter(x=averages.index, y=averages, mode="lines+markers", connectgaps=False, name=str(year))
+                fig.update_xaxes(title="Delivery month", dtick=1, range=[.5, 12.5])
+                display(fig, key + "_seasonality")
+
+    if front:
+        with st.expander("Spot and M+1 correlation"):
+            spot_return, front_return = (indicators(prepared(local[leg][1], days)).change for leg in (spot, front))
+            correlation = spot_return.rolling(20, min_periods=20).corr(front_return).clip(-1, 1).loc[bounds[0]:bounds[1]]
+            if correlation.notna().any():
+                fig = chart("Correlation", height=260)
+                fig.add_scatter(x=correlation.index, y=correlation, mode="lines", connectgaps=False, name="20-assessment correlation")
+                fig.update_yaxes(range=[-1, 1])
+                date_axis(fig, bounds)
+                display(fig, key + "_correlation")
+            else:
+                st.info("Correlation needs 20 consecutive matched changes with variation in both series.")
+
+    with st.expander("Rolling percentiles and volatility"):
+        studies = {**basis, **calendar}
+        if not studies:
+            st.info("Select a spot basis or calendar spread first.")
+            return
+        name = st.selectbox("Study", list(studies), key=key + "_historical_study")
+        unit, data = studies[name]
+        data = data.copy()
+        samples = data.groupby("segment").price
+        for column, probability in [("Lower", .10), ("Median", .50), ("Upper", .90)]:
+            data[column] = samples.transform(lambda values: values.rolling(20, min_periods=20).quantile(probability))
+        data["Volatility"] = samples.transform(lambda values: values.diff().rolling(20, min_periods=20).std())
+        visible = data.loc[bounds[0]:bounds[1]]
+        if not visible.Median.notna().any():
+            st.info("Percentiles need 20 consecutive matched observations in a roll segment.")
+            return
+        fig = chart(unit_label(*unit), height=300)
+        for index, (column, label) in enumerate([("price", name), ("Median", "Median"), ("Lower", "10th percentile"),
+                                                 ("Upper", "90th percentile")]):
+            draw_segments(fig, visible, column, label, index, VALUE_HOVER)
+        date_axis(fig, bounds)
+        display(fig, key + "_percentiles")
+        if visible.Volatility.notna().any():
+            vol = chart(unit_label(*unit), height=260)
+            draw_segments(vol, visible, "Volatility", "20-assessment change volatility", 0, VALUE_HOVER)
+            date_axis(vol, bounds)
+            display(vol, key + "_volatility")

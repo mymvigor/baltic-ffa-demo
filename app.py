@@ -1,4 +1,5 @@
 import hashlib
+from datetime import timedelta
 from html import escape
 
 import pandas as pd
@@ -8,7 +9,8 @@ from ffa.analytics import frame, options
 from ffa.demo import data as demo_data
 from ffa.model import VESSELS
 from ffa.store import connect, market
-from ffa.ui import basis_and_slope, curve_moves, curves, prices, spreads
+from ffa.research import calendar_spreads, comparison_workspace, historical_context, spot_comparison
+from ffa.ui import curve_moves, curves, prices
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -106,14 +108,28 @@ def main():
     days = pd.DatetimeIndex(sorted(data.quote_day.unique()))
     context.caption(f"{escape(product)}  ·  {days[-1]:%d %b %Y}  ·  {len(days):,} assessment dates")
 
+    bounds = st.date_input(
+        "Assessment Date Range",
+        (max(days[0].date(), days[-1].date() - timedelta(days=90)), days[-1].date()),
+        min_value=fixed.quote_day.min().date(), max_value=fixed.quote_day.max().date(),
+        key=f"{vessel}_{product}_assessment_window",
+    )
+    if len(bounds) != 2:
+        st.info("Choose a start and end date.")
+        return
+    bounds = tuple(pd.Timestamp(day) for day in bounds)
+
     market_rolling = rolling[rolling.vessel.eq(vessel) & rolling["product"].eq(product)]
     local = options(data, market_rolling)
+    all_series = options(fixed, rolling)
     key = f"{vessel}_{product}"
-    curve = curves(data, key)
-    prices(local, days, key)
+    curve = curves(data, fixed, bounds, key)
+    basis = spot_comparison(local, days, bounds, key)
     curve_moves(curve, key)
-    spreads(local, fixed, rolling, key)
-    basis_and_slope(local, days, key)
+    spreads = calendar_spreads(local, days, bounds, key)
+    comparison_workspace(all_series, local, basis, spreads, bounds, key)
+    prices(local, days, bounds, key)
+    historical_context(local, days, basis, spreads, bounds, key)
 
 
 if __name__ == "__main__":
