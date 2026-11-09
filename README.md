@@ -1,3 +1,3 @@
-# Baltic FFA Dashboard Demo
+# Baltic FFA Dashboard
 
-This public demo uses generated synthetic quotes only. Deploy main / app.py on Streamlit Community Cloud with Python 3.12. No secrets are needed.
+Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic data. Live mode uses a private GitHub repository and requires a viewer access code. Configure credentials and the SHA-256 viewer access hash in Streamlit Secrets.
