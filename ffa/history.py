@@ -10,6 +10,7 @@ from .analytics import frame
 from .store import connect
 
 ARCHIVE_PATH = "history"
+ARCHIVE_REVISION = "f1a3e104f83f72e03b813104b98759e06160c9ee"
 IDENTITY = ("vessel", "product", "kind", "currency", "unit", "tenor")
 ROLL_KEY = [*IDENTITY, "rolling", "quote_day"]
 
@@ -17,14 +18,13 @@ ROLL_KEY = [*IDENTITY, "rolling", "quote_day"]
 @st.cache_data(ttl=120, max_entries=4, show_spinner=False)
 def read_manifest(repo, credential_id, _token):
     with connect(repo, _token) as storage:
-        revision = storage.data_revision()
-        raw = storage.read_file(f"{ARCHIVE_PATH}/manifest.json", revision)
+        raw = storage.read_file(f"{ARCHIVE_PATH}/manifest.json", ARCHIVE_REVISION)
     if raw is None:
         return None, {}
     manifest = json.loads(raw)
     if manifest.get("schema") != 1:
         raise ValueError("Unsupported archive format")
-    return revision, manifest
+    return ARCHIVE_REVISION, manifest
 
 
 @st.cache_data(ttl=300, max_entries=12, show_spinner=False)

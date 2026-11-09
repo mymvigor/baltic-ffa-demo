@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from datetime import timedelta
 from html import escape
 
@@ -82,10 +83,17 @@ def main():
             repo = st.secrets["github_repo"]
             credential_id = hashlib.sha256(token.encode()).hexdigest()
             fixed, rolling, _ = read_live(repo, credential_id, token)
-            revision, archive = read_manifest(repo, credential_id, token)
-        except Exception:
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            logging.warning("FFA live feed unavailable: %s", reason)
             st.error("Market data is temporarily unavailable.")
             return
+        try:
+            revision, archive = read_manifest(repo, credential_id, token)
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+            logging.warning("FFA archive index unavailable: %s", reason)
+            st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
     else:
         fixed, rolling, _ = demo_data()
 
