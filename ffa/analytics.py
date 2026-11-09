@@ -3,7 +3,7 @@ import pandas as pd
 from .model import label
 
 FIELDS = ["identity", "quote_day", "vessel", "product", "kind", "currency", "unit", "tenor",
-          "delivery_start", "delivery_end", "rolling", "mapping", "source", "price"]
+          "delivery_start", "delivery_end", "series", "rolling", "mapping", "source", "price"]
 
 
 def frame(rows):
@@ -19,7 +19,13 @@ def unit_label(currency, unit):
 
 
 def delivery_label(tenor, start):
-    return "现货" if tenor == "spot" else label(tenor, None if pd.isna(start) else start)
+    if tenor == "spot":
+        return "Spot"
+    if pd.isna(start):
+        return "Unconfirmed delivery"
+    if tenor == "month":
+        return start.strftime("%b %y")
+    return label(tenor, start)
 
 
 def options(fixed, rolling):
@@ -38,9 +44,9 @@ def options(fixed, rolling):
             # Multiple supplier series for a rolling code must remain independent.
             for index, (_, sub) in enumerate(data.groupby("series"), 1):
                 if not sub.duplicated("quote_day").any():
-                    series[(*base, "Rolling", f"{code}#{index}")] = (f"{code} · 系列 {index}", sub)
+                    series[(*base, "Rolling", f"{code}#{index}")] = (f"{code} · Series {index}", sub)
         else:
-            name = f"{code} · 交割期未确认" if unresolved else code
+            name = f"{code} · Unconfirmed delivery" if unresolved else code
             series[(*base, "Rolling", code)] = (name, data)
     return series
 
