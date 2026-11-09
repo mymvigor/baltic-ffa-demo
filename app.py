@@ -7,6 +7,7 @@ import streamlit as st
 
 from ffa.analytics import frame, options
 from ffa.demo import data as demo_data
+from ffa.history import merge_history, read_history, read_manifest
 from ffa.model import VESSELS
 from ffa.store import connect, market
 from ffa.research import calendar_spreads, comparison_workspace, historical_context, spot_comparison
@@ -15,7 +16,7 @@ from ffa.ui import curve_moves, curves, prices
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
 BENCHMARKS = {
-    "CAPE": ("C5TC",),
+    "CAPE": ("C5TC (182)", "C5TC"),
     "PMX": ("P5TC",),
     "SMX": ("S11TC", "S10TC"),
     "HDY": ("HS7TC", "H7TC"),
@@ -74,10 +75,14 @@ def main():
         st.caption("DRY FREIGHT RESEARCH")
         vessel = st.radio("Vessel class", list(VESSELS), format_func=VESSELS.get)
 
+    archive = {}
     if live:
         try:
             token = st.secrets["github_reader_token"]
-            fixed, rolling, _ = read_live(st.secrets["github_repo"], hashlib.sha256(token.encode()).hexdigest(), token)
+            repo = st.secrets["github_repo"]
+            credential_id = hashlib.sha256(token.encode()).hexdigest()
+            fixed, rolling, _ = read_live(repo, credential_id, token)
+            revision, archive = read_manifest(repo, credential_id, token)
         except Exception:
             st.error("Market data is temporarily unavailable.")
             return
@@ -105,19 +110,39 @@ def main():
                                        index=products.index(default_product(market_data, vessel)),
                                        key=f"product_{vessel}")
     data = market_data[market_data["product"].eq(product)]
-    days = pd.DatetimeIndex(sorted(data.quote_day.unique()))
-    context.caption(f"{escape(product)}  ·  {days[-1]:%d %b %Y}  ·  {len(days):,} assessment dates")
+    first = data.quote_day.min().date()
+    last = data.quote_day.max().date()
+    earliest = fixed.quote_day.min().date()
+    archive_dates = archive.get("first_dates", {})
+    if archive_dates:
+        first = min(first, pd.Timestamp(archive_dates.get(vessel, {}).get(product, first)).date())
+        earliest = min(earliest, *(pd.Timestamp(value).date() for dates in archive_dates.values() for value in dates.values()))
+    context.caption(f"{escape(product)}  ·  Latest quote {last:%d %b %Y}")
 
     bounds = st.date_input(
         "Assessment Date Range",
-        (max(days[0].date(), days[-1].date() - timedelta(days=90)), days[-1].date()),
-        min_value=fixed.quote_day.min().date(), max_value=fixed.quote_day.max().date(),
+        (max(first, last - timedelta(days=90)), last),
+        min_value=earliest, max_value=fixed.quote_day.max().date(),
         key=f"{vessel}_{product}_assessment_window",
     )
     if len(bounds) != 2:
         st.info("Choose a start and end date.")
         return
+    if archive:
+        start, end = bounds
+        warmup = start - timedelta(days=120)
+        years = tuple(year for year in archive["years"] if warmup.year <= year <= end.year)
+        if years:
+            try:
+                history = read_history(repo, credential_id, revision, years, warmup, end, token)
+                fixed, rolling = merge_history(fixed, rolling, history)
+            except Exception:
+                st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
+        data = fixed[fixed.vessel.eq(vessel) & fixed["product"].eq(product)]
     bounds = tuple(pd.Timestamp(day) for day in bounds)
+    days = pd.DatetimeIndex(sorted(data.quote_day.unique()))
+    count = data.loc[data.quote_day.between(*bounds), "quote_day"].nunique()
+    st.caption(f"{count:,} assessment dates in this range")
 
     market_rolling = rolling[rolling.vessel.eq(vessel) & rolling["product"].eq(product)]
     local = options(data, market_rolling)

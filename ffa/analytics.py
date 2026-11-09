@@ -31,10 +31,12 @@ def delivery_label(tenor, start):
 def options(fixed, rolling):
     eligible = fixed[(fixed.kind == "Spot") | fixed.delivery_start.notna()]
     series = {}
-    for _, row in eligible.sort_values(["kind", "tenor", "delivery_start"]).drop_duplicates("identity").iterrows():
+    ordered = eligible.sort_values(["kind", "tenor", "delivery_start"])
+    for _, rows in ordered.groupby("identity", sort=False):
+        row = rows.iloc[0]
         name = delivery_label(row.tenor, row.delivery_start)
         key = (row.vessel, row["product"], row.kind, row.currency, row.unit, row.tenor, "Fixed", row.identity)
-        series[key] = (name, eligible[eligible.identity == row.identity])
+        series[key] = (name, rows)
     fields = ["vessel", "product", "kind", "currency", "unit", "tenor", "rolling"]
     for components, data in rolling.groupby(fields, sort=True):
         *base, code = components

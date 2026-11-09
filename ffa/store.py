@@ -29,6 +29,21 @@ class Repository:
         if response.status_code != 200 or response.json().get("private") is not True:
             raise RuntimeError("GitHub storage requires a private repository")
 
+    def read_file(self, path, ref=BRANCH):
+        response = self.request("GET", f"/contents/{path}", params={"ref": ref},
+                                headers={"Accept": "application/vnd.github.raw+json"})
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RuntimeError("GitHub data read failed")
+        return response.content
+
+    def data_revision(self):
+        response = self.request("GET", f"/git/ref/heads/{BRANCH}")
+        if response.status_code != 200:
+            raise RuntimeError("Private data branch unavailable")
+        return response.json()["object"]["sha"]
+
     def load(self):
         response = self.request("GET", f"/contents/{PATH}", params={"ref": BRANCH},
                                 headers={"Accept": "application/vnd.github.object+json"})
