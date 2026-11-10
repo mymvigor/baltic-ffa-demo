@@ -11,7 +11,7 @@ from .preferences import choice, multi, toggle
 COLORS = ["#177b81", "#3a59a6", "#b67132", "#784ea4", "#52845b", "#a74f6a"]
 DASHES = ["solid", "dash", "dot", "dashdot"]
 TENORS = {"month": "Monthly", "quarter": "Quarterly", "year": "Calendar year"}
-VALUE_HOVER = "%{x|%d %b %Y}<br>%{y:,.3~f}"
+VALUE_HOVER = "Assessment date: %{x|%d %b %Y}<br>%{y:,.3~f}"
 
 
 def section(number, title, description):
@@ -44,7 +44,7 @@ def display(fig, key):
 
 def date_axis(fig, bounds):
     padding = pd.Timedelta(hours=12)
-    fig.update_layout(hovermode="x unified")
+    fig.update_layout(hovermode="closest")
     fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding],
                      hoverformat="%d %b %Y", nticks=7, showspikes=True, spikedash="dot",
                      spikecolor="#9caebc", spikemode="across", spikesnap="hovered data")

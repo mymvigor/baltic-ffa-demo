@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import time
 from datetime import timedelta
 
 import pandas as pd
@@ -10,6 +11,7 @@ from ffa.demo import data as demo_data
 from ffa.history import merge_history, read_history, read_manifest
 from ffa.model import VESSELS
 from ffa.preferences import calendar, choice
+from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.research import calendar_spreads, comparison_studies, comparison_workspace, historical_context, spot_comparison
 from ffa.ui import TENORS, curve_changes, curves, prices, section
@@ -95,6 +97,45 @@ def show_status(status, vessel, live, fallback):
         st.sidebar.caption(f"Last synced · {pd.Timestamp(successful):%d %b %H:%M} UTC")
 
 
+def refresh_control(repo, token):
+    pending = st.session_state.get("_baltic_refresh")
+    if pending is None:
+        if st.button("Refresh", help="Fetch the latest Baltic assessments through GitHub Actions."):
+            try:
+                run = start_refresh(repo, token)
+            except Exception as exc:
+                logging.warning("Baltic refresh dispatch unavailable: %s", type(exc).__name__)
+                st.warning("Could not start Baltic sync. Showing saved assessments.")
+                return
+            st.session_state["_baltic_refresh"] = run, time.monotonic()
+            st.session_state.pop("_baltic_result", None)
+            st.rerun()
+        result = st.session_state.get("_baltic_result")
+        if result:
+            st.caption(result)
+        return
+
+    @st.fragment(run_every="15s")
+    def progress():
+        run, started = pending
+        st.button("Refresh", disabled=True, key="refresh_in_progress")
+        st.caption("Waiting for Baltic sync…")
+        try:
+            result = refresh_conclusion(repo, token, run)
+        except Exception:
+            result = None
+        if result or time.monotonic() - started > 1800:
+            st.session_state.pop("_baltic_refresh", None)
+            st.session_state["_baltic_result"] = {
+                "success": "Baltic sync finished. See the assessment date below.",
+                None: "Baltic sync could not be confirmed. Showing saved assessments.",
+            }.get(result, "Baltic sync reported a failure. Available assessments have been reloaded.")
+            read_live.clear()
+            st.rerun()
+
+    progress()
+
+
 def main():
     st.markdown(STYLE, unsafe_allow_html=True)
     try:
@@ -106,7 +147,13 @@ def main():
         st.markdown("### Baltic FFA")
         st.caption("DRY FREIGHT RESEARCH")
         vessel = choice("Vessel class", VESSELS, "vessel", "PMX", control="radio", format_func=VESSELS.get)
-        st.button("Refresh", on_click=read_live.clear, help="Reload the latest data saved by the collector.")
+        if live:
+            dispatch_token = st.secrets.get("github_actions_token")
+            if dispatch_token:
+                refresh_control(st.secrets["github_repo"], dispatch_token)
+            else:
+                st.button("Reload saved data", on_click=read_live.clear)
+                st.caption("Baltic sync is not configured for this app.")
 
     archive = {}
     fallback = False
