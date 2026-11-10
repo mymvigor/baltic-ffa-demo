@@ -29,12 +29,37 @@ def show_pair(fig, data, column, name, index):
     draw_segments(fig, data, column, name, index, hover, ["a_period", "b_period"], level=True)
 
 
-def show(fig, bounds, key, empty_message):
+def show(fig, bounds, key, empty_message, unified=False):
     if fig.data:
         date_axis(fig, bounds)
+        if unified:
+            fig.update_layout(hovermode="x unified")
         display(fig, key)
     else:
         st.info(empty_message)
+
+
+def same_day_hover(fig, forward, spot, forward_name):
+    prices = pd.concat([forward.price, spot.price], axis=1).dropna(how="all")
+    if prices.empty:
+        return
+
+    fig.update_traces(hoverinfo="skip", hovertemplate=None)
+    # Identical x coordinates keep both hover rows on the same assessment date.
+    anchor = prices.iloc[:, 0].combine_first(prices.iloc[:, 1])
+    for index, (name, data) in enumerate(((forward_name, forward), ("Spot", spot))):
+        values = prices.iloc[:, index]
+        delivery = data.Delivery.reindex(prices.index)
+        labels = [
+            f"{value:,.3f}".rstrip("0").rstrip(".") + (f" · Delivery {period}" if index == 0 else "")
+            if pd.notna(value) else "No quote"
+            for value, period in zip(values, delivery)
+        ]
+        fig.add_scatter(
+            x=prices.index, y=values.fillna(anchor), name=name, legendgroup=name,
+            mode="markers", marker=dict(opacity=0), showlegend=False,
+            text=labels, hovertemplate="%{text}",
+        )
 
 
 def spot_comparison(local, days, bounds, key):
@@ -60,8 +85,9 @@ def spot_comparison(local, days, bounds, key):
     window = slice(*bounds)
     forward = prepared(local[leg][1], days)
     name = series_name(leg, local)
+    forward_name = "BFA · " + name
     price_fig = chart(unit_label(*unit))
-    draw_history(price_fig, forward.loc[window], "price", "BFA · " + name, 0)
+    draw_history(price_fig, forward.loc[window], "price", forward_name, 0)
     basis = {}
     if spot:
         spot_data = prepared(local[spot][1], days)
@@ -69,7 +95,9 @@ def spot_comparison(local, days, bounds, key):
         basis[f"{name} − Spot"] = (unit, result)
         if show_spot:
             draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
-    show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.")
+            same_day_hover(price_fig, forward.loc[window], spot_data.loc[window], forward_name)
+    show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.",
+         unified=show_spot)
     if show_basis:
         basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=235)
         view = result.loc[window].copy()
