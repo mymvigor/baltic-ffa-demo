@@ -23,13 +23,13 @@ def section(number, title, description):
 def chart(y, height=360):
     fig = go.Figure()
     fig.update_layout(
-        template="plotly_white", height=height, margin=dict(l=12, r=18, t=24, b=16),
+        template="plotly_white", height=height, margin=dict(l=14, r=22, t=40, b=18),
         paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
         font=dict(family="Arial, sans-serif", color="#243b52", size=12),
         hovermode="closest", hoverlabel=dict(bgcolor="#172c42", font_color="#ffffff"),
-        legend=dict(orientation="h", y=1.02, x=0, yanchor="bottom", font_size=11),
+        legend=dict(orientation="h", y=1.025, x=0, yanchor="bottom", font_size=11, groupclick="togglegroup"),
         yaxis=dict(title=y, tickformat=",.3~f", gridcolor="#e7edf3", zerolinecolor="#aebfcd", automargin=True),
-        xaxis=dict(gridcolor="#f0f4f8", automargin=True),
+        xaxis=dict(gridcolor="#eef3f7", automargin=True, tickfont=dict(color="#516478")),
     )
     return fig
 
@@ -43,7 +43,10 @@ def display(fig, key):
 
 def date_axis(fig, bounds):
     padding = pd.Timedelta(hours=12)
-    fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding])
+    fig.update_layout(hovermode="x unified")
+    fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding],
+                     hoverformat="%d %b %Y", nticks=7, showspikes=True, spikedash="dot",
+                     spikecolor="#9caebc", spikemode="across", spikesnap="hovered data")
 
 
 def series_name(key, series, full=False):
@@ -53,34 +56,44 @@ def series_name(key, series, full=False):
     return name
 
 
-def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None):
-    shown = False
-    for _, part in data.groupby("segment", sort=False):
-        if not part[column].notna().any():
-            continue
-        fig.add_scatter(
-            x=part.index, y=part[column], name=name, mode="lines+markers", connectgaps=False,
-            line=dict(color=COLORS[index % len(COLORS)], width=2.3, dash=dash or DASHES[index % len(DASHES)]),
-            marker=dict(size=5), legendgroup=name, showlegend=not shown,
-            customdata=part[custom] if custom else None, hovertemplate=hover + "<extra>%{fullData.name}</extra>",
-        )
-        shown = True
-
-
-def mark_rolls(fig, data, fields):
-    observed = data.dropna(subset=["price"])
+def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None, level=False):
+    observed = data[data[column].notna()]
     if observed.empty:
         return
-    changes = observed[fields].ne(observed[fields].shift()).any(axis=1)
-    known = ~observed[fields].isin(["Unconfirmed delivery", "—"]).any(axis=1)
-    changes &= known & known.shift(fill_value=False)
-    for x in observed.index[changes]:
-        i = observed.index.get_loc(x)
-        before, after = observed.iloc[i - 1], observed.iloc[i]
-        details = " · ".join(f"{before[field]} → {after[field]}" for field in fields if before[field] != after[field])
+
+    color = COLORS[index % len(COLORS)]
+    pattern = dash or DASHES[index % len(DASHES)]
+    bridge_x, bridge_y = [], []
+    if level:
+        # Only actual observations become vertices. Dashed links distinguish roll changes and long gaps.
+        split = observed.segment.ne(observed.segment.shift()) | observed.index.to_series().diff().gt(pd.Timedelta(days=7))
+        for position, boundary in enumerate(split):
+            if position and boundary:
+                bridge_x.extend([*observed.index[position - 1:position + 1], None])
+                bridge_y.extend([*observed[column].iloc[position - 1:position + 1], None])
+        groups = observed.groupby(split.cumsum(), sort=False)
+    else:
+        groups = data.groupby("segment", sort=False)
+
+    x, y, metadata = [], [], []
+    for _, part in groups:
+        x.extend([*part.index, None])
+        y.extend([*part[column], None])
+        if custom:
+            metadata.extend([*part[custom].itertuples(index=False, name=None), (None,) * len(custom)])
+
+    # A single observation cannot form a line. Keep the value visible in that case.
+    fig.add_scatter(
+        x=x, y=y, name=name, mode="lines" if len(observed) > 1 else "markers", connectgaps=False,
+        line=dict(color=color, width=2.35, dash=pattern), marker=dict(size=6, color=color),
+        legendgroup=name, customdata=metadata if custom else None,
+        hovertemplate=hover + "<extra>%{fullData.name}</extra>",
+    )
+    if bridge_x:
         fig.add_scatter(
-            x=[x], y=[after.price], mode="markers", marker=dict(size=9, symbol="diamond-open", color="#536e88"),
-            name="Roll", text=[details], hovertemplate="%{x|%d %b %Y}<br>%{text}<extra>Roll</extra>", showlegend=False,
+            x=bridge_x, y=bridge_y, mode="lines", name=name, legendgroup=name,
+            line=dict(color=color, width=1.6, dash="dot"), opacity=.65,
+            hoverinfo="skip", showlegend=False, connectgaps=False,
         )
 
 
@@ -93,14 +106,15 @@ def rolling_leg(local, suffix, unit=None):
 
 
 def prices(local, days, bounds, key):
-    section(6, "Contract History", "Track rolling or fixed contracts alongside the matching spot assessment.")
+    section(6, "Contract History", "Inspect a fixed delivery or rolling contract, with optional technical overlays.")
     if not local:
         st.info("No price series are available.")
         return
 
     left, right = st.columns([1, 2.2])
     modes = [mode for mode in ("Rolling", "Fixed") if any(k[6] == mode for k in local)]
-    mode = left.radio("Series", modes, horizontal=True, key=key + "_mode")
+    mode = left.radio("Series", modes, index=modes.index("Fixed") if "Fixed" in modes else 0,
+                      horizontal=True, key=key + "_mode")
     all_choices = [k for k in local if k[6] == mode]
     all_choices.sort(key=lambda k: (
         k[2] == "Spot", k[5] != "month", -local[k][1].quote_day.max().value,
@@ -117,7 +131,7 @@ def prices(local, days, bounds, key):
     spot = next((k for k in local if k[2] == "Spot" and k[3:5] == unit), None)
     with st.popover("Chart options"):
         overlays = st.multiselect("Overlays", ["5-day MA", "20-day MA", "Bollinger bands"], key=key + "_overlays")
-        add_spot = st.checkbox("Show matching spot", value=True, key=key + "_spot") if spot else False
+        add_spot = st.checkbox("Show matching spot", value=False, key=key + "_spot") if spot else False
     if add_spot and spot not in selected:
         selected = [*selected, spot]
     if not selected:
@@ -131,9 +145,7 @@ def prices(local, days, bounds, key):
         data["Delivery"] = [delivery_label(t, d) if pd.notna(t) else "—" for t, d in zip(data.tenor, data.delivery_start)]
         data["Code"] = data["rolling"].fillna("—")
         hover = VALUE_HOVER + "<br>Delivery %{customdata[0]}<br>Code %{customdata[1]}"
-        draw_segments(fig, data, "price", name, index, hover, ["Delivery", "Code"])
-        if leg[6] == "Rolling":
-            mark_rolls(fig, data, ["Delivery"])
+        draw_segments(fig, data, "price", name, index, hover, ["Delivery", "Code"], level=True)
         for label, columns in {
             "5-day MA": [("ma5", "5-day MA")],
             "20-day MA": [("ma20", "20-day MA")],
@@ -166,8 +178,9 @@ def curves(data, market, bounds, key):
                           key=key + "_curve_unit") if len(units) > 1 else units[0]
     forward = forward[forward.currency.eq(unit[0]) & forward.unit.eq(unit[1])]
     days = sorted(forward.quote_day.unique(), reverse=True)
+    reference = days[min(5, len(days) - 1)]
     selected = right.multiselect(
-        "Assessment dates", days, default=days[:2], max_selections=4,
+        "Assessment dates", days, default=list(dict.fromkeys([days[0], reference])), max_selections=4,
         format_func=lambda day: day.strftime("%d %b %Y"), key=key + tenor + str(unit) + "_snapshots",
     )
     if not selected:
@@ -209,7 +222,8 @@ def curves(data, market, bounds, key):
                 continue
             fig.add_scatter(
                 x=[delivery_label(tenor, expiry) for expiry in prices.index], y=prices,
-                mode="lines+markers", connectgaps=False, name=f"{name} · {day:%d %b %y}",
+                mode="lines" if prices.notna().sum() > 1 else "markers", connectgaps=False,
+                name=f"{name} · {day:%d %b %y}",
                 line=dict(color=COLORS[trace % len(COLORS)], dash=DASHES[trace % len(DASHES)], width=2.5),
                 marker=dict(size=5),
                 hovertemplate="%{x}<br>%{y:,.3~f}<extra>%{fullData.name}</extra>",

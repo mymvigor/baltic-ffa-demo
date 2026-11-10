@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
-from .ui import VALUE_HOVER, chart, date_axis, display, draw_segments, mark_rolls, rolling_leg, section, series_name
+from .ui import VALUE_HOVER, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
 def prepared(rows, days):
@@ -15,9 +15,8 @@ def prepared(rows, days):
 
 
 def draw_history(fig, data, column, name, index):
-    draw_segments(fig, data, column, name, index, VALUE_HOVER + "<br>Delivery %{customdata[0]}", ["Delivery"])
-    if column == "price":
-        mark_rolls(fig, data, ["Delivery"])
+    draw_segments(fig, data, column, name, index, VALUE_HOVER + "<br>Delivery %{customdata[0]}",
+                  ["Delivery"], level=column == "price")
 
 
 def paired(a, b, divide=False, align=False):
@@ -26,9 +25,7 @@ def paired(a, b, divide=False, align=False):
 
 def show_pair(fig, data, column, name, index):
     hover = VALUE_HOVER + "<br>%{customdata[0]} · %{customdata[1]}"
-    draw_segments(fig, data, column, name, index, hover, ["a_period", "b_period"])
-    if column == "price":
-        mark_rolls(fig, data, ["a_period", "b_period"])
+    draw_segments(fig, data, column, name, index, hover, ["a_period", "b_period"], level=True)
 
 
 def show(fig, bounds, key, empty_message):
@@ -158,13 +155,16 @@ def comparison_workspace(series, local, basis, calendar, bounds, key):
     studies = [name for name, (measure_unit, _) in derived.items() if not enforce_unit or measure_unit == unit]
     spot = next((leg for leg in candidates if leg in local and leg[2] == "Spot"), None)
     defaults = [preferred] if preferred in candidates else candidates[:1]
-    if spot and spot not in defaults:
-        defaults.append(spot)
+    second = rolling_leg(local, "+2MON", unit)
+    alternative = second if second in candidates and second not in defaults else spot
+    if alternative and alternative not in defaults:
+        defaults.append(alternative)
 
     def name(item):
         if isinstance(item, str):
             return item
-        return f"{series_name(item, available, full=True)} · {item[2] if item[2] == 'Spot' else item[6]}"
+        label = series_name(item, available, full=True)
+        return label if item[2] == "Spot" else f"{label} · {item[6]}"
 
     pair = method in {"Spread", "Ratio"}
     selected = st.multiselect("Series", [*candidates, *studies], default=defaults,
@@ -250,8 +250,8 @@ def historical_context(local, days, basis, calendar, bounds, key):
                 fig = chart(unit_label(*spot[3:5]), height=290)
                 for year, values in monthly.groupby(monthly.index.year):
                     averages = values.set_axis(values.index.month)["mean"].reindex(range(1, 13))
-                    fig.add_scatter(x=averages.index, y=averages, mode="lines+markers", connectgaps=False, name=str(year))
-                fig.update_xaxes(title="Delivery month", dtick=1, range=[.5, 12.5])
+                    fig.add_scatter(x=averages.index, y=averages, mode="lines", connectgaps=False, name=str(year))
+                fig.update_xaxes(title="Calendar month", dtick=1, range=[.5, 12.5])
                 display(fig, key + "_seasonality")
 
     if front:

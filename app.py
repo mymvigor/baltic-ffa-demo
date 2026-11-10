@@ -1,6 +1,6 @@
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from html import escape
 
 import pandas as pd
@@ -29,6 +29,8 @@ STYLE = """
 @media (min-width: 768px) {
     [data-testid="stSidebar"][aria-expanded="true"] { width: 216px !important; min-width: 216px !important; }
 }
+[data-testid="stPlotlyChart"] {background:#fff; border:1px solid #dfe7ef; border-radius:13px;
+    padding:.35rem .5rem; box-shadow:0 2px 10px rgba(19, 41, 65, .04);}
 [data-testid="stSidebarContent"] {border-right: 1px solid #e2e9ef;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
 .ffa-hero {background: linear-gradient(112deg,#101c30,#17354a); border:1px solid #263e53;
@@ -62,6 +64,34 @@ def default_product(data, vessel):
                 return name
         return sorted(latest["product"])[0]
     return data.sort_values("quote_day", ascending=False).iloc[0]["product"]
+
+
+def assessment_window(first, last, earliest, latest, key):
+    window_key, quick_key = key + "_assessment_window", key + "_quick_window"
+    ranges = {
+        "1M": last - timedelta(days=30),
+        "3M": last - timedelta(days=90),
+        "6M": last - timedelta(days=180),
+        "YTD": date(last.year, 1, 1),
+        "1Y": last - timedelta(days=365),
+        "All": first,
+    }
+
+    def apply_preset():
+        selected = st.session_state[quick_key]
+        if selected:
+            st.session_state[window_key] = (max(first, ranges[selected]), last)
+
+    def clear_preset():
+        st.session_state[quick_key] = None
+
+    if window_key not in st.session_state:
+        st.session_state[window_key] = (max(first, ranges["3M"]), last)
+    left, right = st.columns([1.15, 1], vertical_alignment="bottom")
+    left.segmented_control("Quick range", list(ranges), selection_mode="single", key=quick_key,
+                           on_change=apply_preset)
+    return right.date_input("Assessment Date Range", min_value=earliest, max_value=latest,
+                            key=window_key, on_change=clear_preset)
 
 
 def main():
@@ -127,12 +157,7 @@ def main():
         earliest = min(earliest, *(pd.Timestamp(value).date() for dates in archive_dates.values() for value in dates.values()))
     context.caption(f"{escape(product)}  ·  Latest quote {last:%d %b %Y}")
 
-    bounds = st.date_input(
-        "Assessment Date Range",
-        (max(first, last - timedelta(days=90)), last),
-        min_value=earliest, max_value=fixed.quote_day.max().date(),
-        key=f"{vessel}_{product}_assessment_window",
-    )
+    bounds = assessment_window(first, last, earliest, fixed.quote_day.max().date(), f"{vessel}_{product}")
     if len(bounds) != 2:
         st.info("Choose a start and end date.")
         return
@@ -150,7 +175,7 @@ def main():
     bounds = tuple(pd.Timestamp(day) for day in bounds)
     days = pd.DatetimeIndex(sorted(data.quote_day.unique()))
     count = data.loc[data.quote_day.between(*bounds), "quote_day"].nunique()
-    st.caption(f"{count:,} assessment dates in this range")
+    st.caption(f"{count:,} assessment dates in this range · Dotted links mark contract rolls or gaps longer than seven days.")
 
     market_rolling = rolling[rolling.vessel.eq(vessel) & rolling["product"].eq(product)]
     local = options(data, market_rolling)
