@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
+from .preferences import choice, multi, toggle
 from .ui import VALUE_HOVER, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
@@ -37,58 +38,49 @@ def show(fig, bounds, key, empty_message):
 
 
 def spot_comparison(local, days, bounds, key):
-    section(2, "Spot vs BFA", "Compare forward assessments with their underlying spot benchmark.")
     choices = [leg for leg in local if leg[2] == "BFA"]
-    spots = [leg for leg in local if leg[2] == "Spot" and any(leg[3:5] == forward[3:5] for forward in choices)]
-    if not spots:
-        st.info("No same-benchmark spot and forward series share a quote unit.")
+    if not choices:
+        st.info("No BFA series available.")
         return {}
-    spot = st.selectbox("Spot series", spots, format_func=lambda leg: unit_label(*leg[3:5]),
-                        key=key + "_basis_spot") if len(spots) > 1 else spots[0]
-    unit = spot[3:5]
-    choices = [leg for leg in choices if leg[3:5] == unit]
-    default = rolling_leg(local, "+1MON", unit) or choices[0]
-    left, right = st.columns([2, 1])
-    selected = left.multiselect("BFA contracts", choices, default=[default], max_selections=4,
-                                format_func=lambda leg: series_name(leg, local), key=key + "_basis_legs_" + str(unit))
-    measure = right.radio("Basis display", ["Price difference", "Percent"], horizontal=True, key=key + "_basis_measure")
-    if not selected:
-        st.info("Select a BFA contract to compare with spot.")
-        return {}
+    default = rolling_leg(local, "+1MON") or choices[0]
+    left, right = st.columns([2, 1], vertical_alignment="bottom")
+    leg = choice("BFA contract", choices, key + "_basis_leg", default, container=left,
+                 format_func=lambda leg: series_name(leg, local))
+    unit = leg[3:5]
+    spot = next((item for item in local if item[2] == "Spot" and item[3:5] == unit), None)
+    show_spot = toggle("Show Spot", key + "_show_spot", container=right) if spot else False
+    show_basis = False
+    measure = "Price difference"
+    if show_spot:
+        with st.popover("Basis options"):
+            show_basis = toggle("Show basis chart", key + "_show_basis", default=True)
+            if show_basis:
+                measure = choice("Basis display", ["Price difference", "Percent"], key + "_basis_measure")
 
     window = slice(*bounds)
-    spot_data = prepared(local[spot][1], days)
+    forward = prepared(local[leg][1], days)
+    name = series_name(leg, local)
     price_fig = chart(unit_label(*unit))
-    basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=275)
-    draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
-    latest = []
+    draw_history(price_fig, forward.loc[window], "price", "BFA · " + name, 0)
     basis = {}
-    for index, leg in enumerate(selected):
-        name = series_name(leg, local)
-        forward = prepared(local[leg][1], days)
-        draw_history(price_fig, forward.loc[window], "price", "BFA · " + name, index + (index > 0))
-        seen = forward.loc[window].price.last_valid_index()
-        if seen is not None:
-            latest.append(f"{name} {seen:%d %b %Y}")
+    if spot:
+        spot_data = prepared(local[spot][1], days)
         result = paired(forward, spot_data)
         basis[f"{name} − Spot"] = (unit, result)
+        if show_spot:
+            draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
+    show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.")
+    if show_basis:
+        basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=235)
         view = result.loc[window].copy()
         view["percent"] = 100 * view.price / view.b.where(view.b.gt(0))
-        show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", name, index)
-
-    spot_date = spot_data.loc[window].price.last_valid_index()
-    if spot_date is not None:
-        latest.insert(0, f"Spot {spot_date:%d %b %Y}")
-    if latest:
-        st.caption("Latest visible quotes · " + " · ".join(latest))
-    show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.")
-    st.markdown("**BFA − Spot**")
-    show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range. Basis is unavailable.")
+        show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", "BFA − Spot", 0)
+        show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range.")
     return basis
 
 
 def calendar_spreads(local, days, bounds, key):
-    section(4, "Calendar Spreads", "Near leg minus far leg, using matched assessment dates.")
+    st.markdown("**Calendar spread · Near − Far**")
     legs = [leg for leg in local if leg[2] == "BFA"]
     if len(legs) < 2:
         st.info("At least two forward contracts are needed.")
@@ -107,19 +99,22 @@ def calendar_spreads(local, days, bounds, key):
         if near and far:
             presets[label] = near, far
 
-    choice = st.selectbox("Spread", list(presets), index=int(len(presets) > 1), key=key + "_calendar_preset")
-    if choice == "Custom legs":
+    preset = choice("Spread", presets, key + "_calendar_preset", list(presets)[int(len(presets) > 1)]) if len(presets) > 1 else "Custom legs"
+    if preset == "Custom legs":
         left, right = st.columns(2)
-        near = left.selectbox("Near leg", legs, format_func=lambda leg: series_name(leg, local),
-                              key=key + "_calendar_near")
+        active = [leg for leg in legs if local[leg][1].delivery_end.max() >= bounds[1]]
+        preferred = next((leg for leg in active if leg[5] == "month"), (active or legs)[0])
+        near = choice("Near leg", legs, key + "_calendar_near", preferred, container=left,
+                      format_func=lambda leg: series_name(leg, local))
         matches = [leg for leg in legs if leg != near and leg[3:5] == near[3:5]]
         if not matches:
             st.info("No compatible far leg.")
             return {}
-        far = right.selectbox("Far leg", matches, format_func=lambda leg: series_name(leg, local),
-                              key=key + "_calendar_far_" + str(near))
+        later = [leg for leg in matches if leg[5] == near[5] and local[leg][1].delivery_start.min() > local[near][1].delivery_start.min()]
+        far = choice("Far leg", matches, key + "_calendar_far_" + str(near),
+                     (later or matches)[0], container=right, format_func=lambda leg: series_name(leg, local))
     else:
-        near, far = presets[choice]
+        near, far = presets[preset]
 
     unit = near[3:5]
     a, b = (prepared(local[leg][1], days) for leg in (near, far))
@@ -133,14 +128,38 @@ def calendar_spreads(local, days, bounds, key):
     return {name: (unit, result)}
 
 
-def comparison_workspace(series, local, basis, calendar, bounds, key):
-    section(5, "Comparison Workspace", "Build a view from Spot, Rolling, Fixed and the basis or spread studies above.")
-    scope, method_column, study = st.columns(3)
-    universe = scope.selectbox("Universe", ["Current benchmark", "All benchmarks"], key=key + "_compare_universe")
-    method = method_column.selectbox("View", ["Overlay", "Spread", "Ratio", "Rebased to 100"], key=key + "_compare_view")
+def comparison_studies(local, days):
+    near = rolling_leg(local, "+1MON")
+    if near is None:
+        return {}, {}
+    unit = near[3:5]
+    name, rows = local[near]
+    a = prepared(rows, days)
+    spot = next((leg for leg in local if leg[2] == "Spot" and leg[3:5] == unit), None)
+    far = rolling_leg(local, "+2MON", unit)
+    basis, calendar = {}, {}
+    if spot:
+        basis[f"{name} − Spot"] = (unit, paired(a, prepared(local[spot][1], days)))
+    if far:
+        b = prepared(local[far][1], days)
+        spread = paired(a, b)
+        spread["price"] = spread.price.where(a.delivery_start.lt(b.delivery_start))
+        calendar[f"{name} − {local[far][0]}"] = (unit, spread)
+    return basis, calendar
+
+
+def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode):
+    scope, method_column = st.columns(2)
+    universe = choice("Universe", ["Current benchmark", "All benchmarks"], key + "_compare_universe", container=scope)
+    methods = ["Spread", "Ratio"] if pair_mode else ["Overlay", "Rebased to 100"]
+    method = choice("View", methods, key + "_compare_view", container=method_column,
+                    control="radio", horizontal=True)
     metrics = {"Price or level": "price", "1-assessment change (%)": "change",
                "5-assessment mean": "ma5", "20-assessment mean": "ma20"}
-    metric = study.selectbox("Measure", list(metrics), key=key + "_compare_metric") if method == "Overlay" else "Price or level"
+    metric = "Price or level"
+    if method == "Overlay":
+        with st.popover("Series options"):
+            metric = choice("Measure", metrics, key + "_compare_metric")
     available = local if universe == "Current benchmark" else series
     derived = {} if method == "Rebased to 100" or metric != "Price or level" else {**basis, **calendar}
     if not available:
@@ -149,8 +168,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key):
     preferred = rolling_leg(local, "+1MON") or next(iter(available))
     units = list(dict.fromkeys([preferred[3:5], *(leg[3:5] for leg in available)]))
     enforce_unit = method != "Rebased to 100" and metric != "1-assessment change (%)"
-    unit = st.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
-                        key=key + "_compare_unit") if enforce_unit and len(units) > 1 else units[0]
+    unit = choice("Quote unit", units, key + "_compare_unit", format_func=lambda pair: unit_label(*pair)) if enforce_unit and len(units) > 1 else units[0]
     candidates = [leg for leg in available if not enforce_unit or leg[3:5] == unit]
     studies = [name for name, (measure_unit, _) in derived.items() if not enforce_unit or measure_unit == unit]
     spot = next((leg for leg in candidates if leg in local and leg[2] == "Spot"), None)
@@ -166,10 +184,21 @@ def comparison_workspace(series, local, basis, calendar, bounds, key):
         label = series_name(item, available, full=True)
         return label if item[2] == "Spot" else f"{label} · {item[6]}"
 
-    pair = method in {"Spread", "Ratio"}
-    selected = st.multiselect("Series", [*candidates, *studies], default=defaults,
-                              max_selections=2 if pair else 5, format_func=name,
-                              key=key + f"_compare_legs_{universe}_{method}_{metric}_{unit}")
+    pair = pair_mode
+    eligible = [*candidates, *studies]
+    series_key = key + f"_compare_legs_{universe}_{metric}_{unit}"
+    if not eligible or (pair and len(eligible) < 2):
+        st.info("Not enough compatible series for this view.")
+        return
+    if pair:
+        left, right = st.columns(2)
+        first = choice("Leg A", eligible, series_key + "_a", defaults[0] if defaults else None,
+                       container=left, format_func=name)
+        second = choice("Leg B", [item for item in eligible if item != first], series_key + "_b",
+                        defaults[1] if len(defaults) > 1 else None, container=right, format_func=name)
+        selected = [first, second]
+    else:
+        selected = multi("Series", eligible, series_key + method, defaults, 5, format_func=name)
     if not selected or (pair and len(selected) != 2):
         st.info("Select two series for this comparison." if pair else "Select one or more series.")
         return
@@ -235,7 +264,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key):
 
 
 def historical_context(local, days, basis, calendar, bounds, key):
-    section(7, "Historical Context", "Place the selected basis or calendar spread in its own observed history.")
+    st.caption("Historical context")
     spot = next((leg for leg in local if leg[2] == "Spot"), None)
     front = rolling_leg(local, "+1MON", spot[3:5]) if spot else None
     if spot:
@@ -272,7 +301,7 @@ def historical_context(local, days, basis, calendar, bounds, key):
         if not studies:
             st.info("Select a spot basis or calendar spread first.")
             return
-        name = st.selectbox("Study", list(studies), key=key + "_historical_study")
+        name = choice("Study", studies, key + "_historical_study")
         unit, data = studies[name]
         data = data.copy()
         samples = data.groupby("segment").price

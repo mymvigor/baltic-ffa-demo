@@ -6,6 +6,7 @@ import streamlit as st
 
 from .analytics import delivery_label, indicators, snapshots, timeline, unit_label
 from .model import VESSELS
+from .preferences import choice, multi, toggle
 
 COLORS = ["#177b81", "#3a59a6", "#b67132", "#784ea4", "#52845b", "#a74f6a"]
 DASHES = ["solid", "dash", "dot", "dashdot"]
@@ -20,7 +21,7 @@ def section(number, title, description):
     )
 
 
-def chart(y, height=360):
+def chart(y, height=310):
     fig = go.Figure()
     fig.update_layout(
         template="plotly_white", height=height, margin=dict(l=14, r=22, t=40, b=18),
@@ -105,17 +106,16 @@ def rolling_leg(local, suffix, unit=None):
     ), None)
 
 
-def prices(local, days, bounds, key):
-    section(6, "Contract History", "Inspect a fixed delivery or rolling contract, with optional technical overlays.")
+def prices(local, days, bounds, key, mode):
     if not local:
         st.info("No price series are available.")
         return
 
     left, right = st.columns([1, 2.2])
-    modes = [mode for mode in ("Rolling", "Fixed") if any(k[6] == mode for k in local)]
-    mode = left.radio("Series", modes, index=modes.index("Fixed") if "Fixed" in modes else 0,
-                      horizontal=True, key=key + "_mode")
     all_choices = [k for k in local if k[6] == mode]
+    if not all_choices:
+        st.info("No contracts for this series type.")
+        return
     all_choices.sort(key=lambda k: (
         k[2] == "Spot", k[5] != "month", -local[k][1].quote_day.max().value,
         local[k][1].delivery_start.min() if k[2] == "BFA" else pd.Timestamp.max, local[k][0],
@@ -123,15 +123,19 @@ def prices(local, days, bounds, key):
     preferred = rolling_leg(local, "+1MON") if mode == "Rolling" else None
     preferred = preferred or all_choices[0]
     units = list(dict.fromkeys(k[3:5] for k in [preferred, *all_choices]))
-    unit = left.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
-                            key=key + mode + "_price_unit") if len(units) > 1 else units[0]
-    choices = [k for k in all_choices if k[3:5] == unit]
-    selected = right.multiselect("Contracts", choices, default=[preferred if preferred in choices else choices[0]],
-                                 format_func=lambda k: series_name(k, local), key=key + mode + str(unit) + "_legs")
+    unit = choice("Quote unit", units, key + mode + "_price_unit", container=left,
+                  format_func=lambda pair: unit_label(*pair)) if len(units) > 1 else units[0]
+    choices = [k for k in all_choices if k[3:5] == unit and k[2] != "Spot"]
+    if not choices:
+        st.info("No BFA contracts in this quote unit.")
+        return
+    selected = multi("Contracts", choices, key + mode + str(unit) + "_legs",
+                     [preferred if preferred in choices else choices[0]], 5,
+                     format_func=lambda k: series_name(k, local), container=right)
     spot = next((k for k in local if k[2] == "Spot" and k[3:5] == unit), None)
     with st.popover("Chart options"):
-        overlays = st.multiselect("Overlays", ["5-day MA", "20-day MA", "Bollinger bands"], key=key + "_overlays")
-        add_spot = st.checkbox("Show matching spot", value=False, key=key + "_spot") if spot else False
+        overlays = multi("Overlays", ["5-day MA", "20-day MA", "Bollinger bands"], key + mode + "_overlays", [], 3)
+        add_spot = toggle("Show matching spot", key + mode + "_spot") if spot and len(selected) < 5 else False
     if add_spot and spot not in selected:
         selected = [*selected, spot]
     if not selected:
@@ -162,27 +166,24 @@ def prices(local, days, bounds, key):
 
 
 
-def curves(data, market, bounds, key):
-    section(1, "Forward Curve", "Compare assessment snapshots and compatible benchmarks by delivery period.")
-    forward = data[data.kind.eq("BFA") & data.delivery_start.notna() & data.quote_day.between(*bounds)]
-    if forward.empty:
-        st.info("No confirmed forward assessments in this date range.")
-        return None
+def forward_series(data, tenor):
+    return data[data.kind.eq("BFA") & data.delivery_start.notna() & data.tenor.eq(tenor)]
 
-    left, right = st.columns([1, 1.65])
-    tenors = [tenor for tenor in TENORS if tenor in set(forward.tenor)]
-    tenor = left.radio("Delivery", tenors, format_func=TENORS.get, horizontal=True, key=key + "_curve_tenor")
-    forward = forward[forward.tenor.eq(tenor)]
+
+def as_of(days, target):
+    return next((day for day in days if day <= target), None)
+
+
+def curves(data, market, tenor, targets, key):
+    forward = forward_series(data, tenor)
+    if forward.empty:
+        st.info("No forward assessments for this tenor.")
+        return
     units = list(forward[["currency", "unit"]].drop_duplicates().itertuples(index=False, name=None))
-    unit = left.selectbox("Quote unit", units, format_func=lambda pair: unit_label(*pair),
-                          key=key + "_curve_unit") if len(units) > 1 else units[0]
+    unit = choice("Quote unit", units, key + "_curve_unit", format_func=lambda pair: unit_label(*pair)) if len(units) > 1 else units[0]
     forward = forward[forward.currency.eq(unit[0]) & forward.unit.eq(unit[1])]
     days = sorted(forward.quote_day.unique(), reverse=True)
-    reference = days[min(5, len(days) - 1)]
-    selected = right.multiselect(
-        "Assessment dates", days, default=list(dict.fromkeys([days[0], reference])), max_selections=4,
-        format_func=lambda day: day.strftime("%d %b %Y"), key=key + tenor + str(unit) + "_snapshots",
-    )
+    selected = list(dict.fromkeys(day for target in targets if (day := as_of(days, target)) is not None))
     if not selected:
         st.info("Select at least one assessment date.")
         return None
@@ -195,11 +196,10 @@ def curves(data, market, bounds, key):
     ]
     peers = sorted(set(compatible[["vessel", "product"]].itertuples(index=False, name=None)))
     with st.popover("Curve options"):
-        selected_peers = st.multiselect(
-            "Overlay benchmarks", peers, max_selections=2,
-            format_func=lambda item: f"{VESSELS[item[0]]} · {item[1]}", key=key + tenor + str(unit) + "_peers",
-            help="Only benchmarks with the same unit, tenor and at least one selected assessment date are listed.",
-        )
+        selected_peers = multi(
+            "Overlay benchmarks", peers, key + tenor + str(unit) + "_peers", [], 2,
+            format_func=lambda item: f"{VESSELS[item[0]]} · {item[1]}",
+        ) if peers else []
         base = forward[forward.quote_day.isin(selected)]
         overlays = {
             f"{VESSELS[v]} · {name}": compatible[compatible.vessel.eq(v) & compatible["product"].eq(name)]
@@ -211,7 +211,7 @@ def curves(data, market, bounds, key):
             format_func=lambda day: delivery_label(tenor, day), key=key + tenor + str(unit) + "_delivery",
         ) if len(dates) > 1 else (dates[0], dates[0])
 
-    fig = chart(unit_label(*unit), height=408)
+    fig = chart(unit_label(*unit), height=335)
     order = [delivery_label(tenor, day) for day in dates if delivery[0] <= day <= delivery[1]]
     fig.update_xaxes(type="category", title="Delivery period", tickangle=-30, categoryorder="array", categoryarray=order)
     trace = 0
@@ -233,56 +233,55 @@ def curves(data, market, bounds, key):
         display(fig, key + "_curve_chart")
     else:
         st.info("No prices in the selected delivery range.")
-    return forward, tenor, unit, days, selected, delivery
 
 
-def curve_moves(curve, key):
-    section(3, "Curve Repricing", "Compare two assessment dates for the same fixed delivery contracts.")
-    if curve is None:
-        st.info("Select a forward curve first.")
+def curve_changes(data, tenor, mode, targets, lookback, key):
+    data = forward_series(data, tenor)
+    if data.empty:
+        st.info("No forward assessments for this tenor.")
         return
-    data, tenor, unit, days, selected, delivery = curve
+    units = list(data[["currency", "unit"]].drop_duplicates().itertuples(index=False, name=None))
+    unit = choice("Quote unit", units, key + "_changes_unit", format_func=lambda pair: unit_label(*pair)) if len(units) > 1 else units[0]
+    data = data[data.currency.eq(unit[0]) & data.unit.eq(unit[1])]
+    days = sorted(data.quote_day.unique(), reverse=True)
     if len(days) < 2:
-        st.info("Two forward assessment dates are needed for repricing.")
+        st.info("Two forward assessment dates are needed.")
         return
 
-    left, right = st.columns(2)
-    anchor_default = max(selected)
-    anchor = left.selectbox("To assessment", days, index=days.index(anchor_default),
-                            format_func=lambda day: day.strftime("%d %b %Y"), key=key + tenor + "_move_to")
-    prior = [day for day in days if day < anchor]
-    if not prior:
-        st.info("Choose a later assessment as the end date.")
+    if mode == "Heatmap":
+        matrix = data.pivot(index="quote_day", columns="delivery_start", values="price").sort_index()
+        changes = matrix.diff().tail(lookback).dropna(axis=1, how="all")
+        if changes.empty:
+            st.info("No consecutive assessments share delivery contracts.")
+            return
+        fig = chart("Assessment date", height=360)
+        fig.add_heatmap(x=[delivery_label(tenor, day) for day in changes.columns],
+                        y=changes.index.strftime("%d %b %Y"), z=changes.to_numpy(), zmid=0,
+                        colorscale=[[0, "#a74f6a"], [.5, "#f6f8fb"], [1, "#177b81"]],
+                        colorbar=dict(title=unit_label(*unit)),
+                        hovertemplate="%{y} · %{x}<br>%{z:+,.3~f}<extra></extra>")
+        fig.update_xaxes(type="category", title="Delivery period")
+        fig.update_yaxes(nticks=10)
+        display(fig, key + "_heatmap")
         return
-    previous = right.selectbox("From assessment", prior, format_func=lambda day: day.strftime("%d %b %Y"),
-                               key=key + tenor + f"_move_from_{anchor:%Y%m%d}")
+
+    anchor, previous = (as_of(days, target) for target in targets)
+    if anchor is None or previous is None or anchor <= previous:
+        st.info("Choose two different assessment dates in chronological order.")
+        return
     views = snapshots(data, [anchor, previous])
-    delta = (views[anchor].price - views[previous].price).loc[delivery[0]:delivery[1]].dropna()
+    delta = (views[anchor].price - views[previous].price).dropna()
     if delta.empty:
-        st.info("These assessments share no fixed contracts in the delivery range.")
+        st.info("These assessments share no fixed delivery contracts.")
         return
 
-    fig = chart(unit_label(*unit), height=315)
+    st.caption(f"{previous:%d %b %Y} → {anchor:%d %b %Y} · Matched fixed deliveries")
+    fig = chart(unit_label(*unit), height=300)
     fig.update_xaxes(type="category", title="Delivery period", tickangle=-30)
-    fig.add_bar(x=[delivery_label(tenor, day) for day in delta.index], y=delta,
+    fig.update_yaxes(autorangeoptions=dict(include=0))
+    fig.update_layout(uniformtext_minsize=9, uniformtext_mode="hide")
+    fig.add_bar(x=[delivery_label(tenor, day) for day in delta.index], y=delta, texttemplate="%{y:+,.3~f}",
+                textposition="outside", cliponaxis=False,
                 marker_color=["#177b81" if value >= 0 else "#a74f6a" for value in delta],
                 hovertemplate="%{x}<br>%{y:+,.3~f}<extra>Assessment change</extra>")
     display(fig, key + "_curve_moves")
-
-    if len(days) >= 3:
-        with st.expander("Daily repricing heatmap"):
-            matrix = data.pivot(index="quote_day", columns="delivery_start", values="price").sort_index()
-            changes = matrix.diff().loc[:, delivery[0]:delivery[1]].dropna(how="all").tail(20)
-            if changes.empty:
-                st.info("No consecutive assessments share delivery contracts in this range.")
-            else:
-                heatmap = chart("Assessment date")
-                heatmap.add_heatmap(
-                    x=[delivery_label(tenor, day) for day in changes.columns],
-                    y=changes.index.strftime("%d %b %Y"), z=changes.to_numpy(), zmid=0,
-                    colorscale=[[0, "#a74f6a"], [.5, "#f6f8fb"], [1, "#177b81"]],
-                    colorbar=dict(title=unit_label(*unit)),
-                    hovertemplate="%{y} · %{x}<br>%{z:+,.3~f}<extra></extra>",
-                )
-                heatmap.update_xaxes(type="category", title="Delivery period")
-                display(heatmap, key + "_heatmap")
