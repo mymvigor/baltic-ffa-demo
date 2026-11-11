@@ -10,7 +10,7 @@ from ffa.analytics import frame, options
 from ffa.demo import data as demo_data
 from ffa.history import merge_history, read_history, read_manifest
 from ffa.model import VESSELS
-from ffa.preferences import calendar, choice
+from ffa.preferences import calendar, choice, restore_preferences
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.research import calendar_spreads, comparison_studies, comparison_workspace, historical_context, spot_comparison
@@ -138,6 +138,7 @@ def refresh_control(repo, token):
 
 def main():
     st.markdown(STYLE, unsafe_allow_html=True)
+    restore_preferences()
     try:
         live = st.secrets.get("mode") == "live"
     except FileNotFoundError:

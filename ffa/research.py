@@ -5,7 +5,7 @@ import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
 from .preferences import choice, multi, toggle
-from .ui import VALUE_HOVER, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
+from .ui import COLORS, VALUE_HOVER, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
 def prepared(rows, days):
@@ -16,8 +16,7 @@ def prepared(rows, days):
 
 
 def draw_history(fig, data, column, name, index):
-    draw_segments(fig, data, column, name, index, VALUE_HOVER + "<br>Delivery %{customdata[0]}",
-                  ["Delivery"], level=column == "price")
+    draw_segments(fig, data, column, name, index, VALUE_HOVER, level=column == "price")
 
 
 def paired(a, b, divide=False, align=False):
@@ -25,8 +24,7 @@ def paired(a, b, divide=False, align=False):
 
 
 def show_pair(fig, data, column, name, index):
-    hover = VALUE_HOVER + "<br>%{customdata[0]} · %{customdata[1]}"
-    draw_segments(fig, data, column, name, index, hover, ["a_period", "b_period"], level=True)
+    draw_segments(fig, data, column, name, index, VALUE_HOVER, level=True)
 
 
 def show(fig, bounds, key, empty_message, unified=False):
@@ -34,6 +32,7 @@ def show(fig, bounds, key, empty_message, unified=False):
         date_axis(fig, bounds)
         if unified:
             fig.update_layout(hovermode="x unified")
+            fig.update_layout(hoverlabel_font_family="Consolas, monospace")
         display(fig, key)
     else:
         st.info(empty_message)
@@ -47,18 +46,20 @@ def same_day_hover(fig, forward, spot, forward_name):
     fig.update_traces(hoverinfo="skip", hovertemplate=None)
     # Identical x coordinates keep both hover rows on the same assessment date.
     anchor = prices.iloc[:, 0].combine_first(prices.iloc[:, 1])
-    for index, (name, data) in enumerate(((forward_name, forward), ("Spot", spot))):
+    names = (forward_name, "Spot")
+    width = max(map(len, names))
+    for index, name in enumerate(names):
         values = prices.iloc[:, index]
-        delivery = data.Delivery.reindex(prices.index)
-        labels = [
-            f"{value:,.3f}".rstrip("0").rstrip(".") + (f" · Delivery {period}" if index == 0 else "")
-            if pd.notna(value) else "No quote"
-            for value, period in zip(values, delivery)
-        ]
+        label = name.ljust(width + 3).replace(" ", "&nbsp;")
+        labels = []
+        for value in values:
+            formatted = f"{value:,.3f}".rstrip("0").rstrip(".") if pd.notna(value) else "No quote"
+            number = formatted.rjust(12).replace(" ", "&nbsp;")
+            labels.append(f"{label}<b>{number}</b>")
         fig.add_scatter(
             x=prices.index, y=values.fillna(anchor), name=name, legendgroup=name,
-            mode="markers", marker=dict(opacity=0), showlegend=False,
-            text=labels, hovertemplate="%{text}",
+            mode="markers", marker=dict(size=0, color=COLORS[index]), showlegend=False,
+            text=labels, hovertemplate="%{text}<extra></extra>",
         )
 
 
@@ -307,7 +308,9 @@ def historical_context(local, days, basis, calendar, bounds, key):
                 fig = chart(unit_label(*spot[3:5]), height=290)
                 for year, values in monthly.groupby(monthly.index.year):
                     averages = values.set_axis(values.index.month)["mean"].reindex(range(1, 13))
-                    fig.add_scatter(x=averages.index, y=averages, mode="lines", connectgaps=False, name=str(year))
+                    fig.add_scatter(x=averages.index, y=averages, mode="lines", connectgaps=False, name=str(year),
+                                    text=pd.to_datetime(averages.index, format="%m").strftime("%b"),
+                                    hovertemplate="<b>%{fullData.name}</b><br>%{text}<br><b>%{y:,.3~f}</b><extra></extra>")
                 fig.update_xaxes(title="Calendar month", dtick=1, range=[.5, 12.5])
                 display(fig, key + "_seasonality")
 
@@ -317,7 +320,9 @@ def historical_context(local, days, basis, calendar, bounds, key):
             correlation = spot_return.rolling(20, min_periods=20).corr(front_return).clip(-1, 1).loc[bounds[0]:bounds[1]]
             if correlation.notna().any():
                 fig = chart("Correlation", height=260)
-                fig.add_scatter(x=correlation.index, y=correlation, mode="lines", connectgaps=False, name="20-assessment correlation")
+                fig.add_scatter(x=correlation.index, y=correlation, mode="lines", connectgaps=False,
+                                name="20-assessment correlation",
+                                hovertemplate="<b>%{fullData.name}</b><br>%{x|%d %b %Y}<br><b>%{y:.2f}</b><extra></extra>")
                 fig.update_yaxes(range=[-1, 1])
                 date_axis(fig, bounds)
                 display(fig, key + "_correlation")

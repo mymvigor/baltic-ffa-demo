@@ -11,7 +11,7 @@ from .preferences import choice, multi, toggle
 COLORS = ["#177b81", "#3a59a6", "#b67132", "#784ea4", "#52845b", "#a74f6a"]
 DASHES = ["solid", "dash", "dot", "dashdot"]
 TENORS = {"month": "Monthly", "quarter": "Quarterly", "year": "Calendar year"}
-VALUE_HOVER = "Assessment date: %{x|%d %b %Y}<br>%{y:,.3~f}"
+VALUE_HOVER = "%{x|%d %b %Y}<br><b>%{y:,.3~f}</b>"
 
 
 def section(number, title, description):
@@ -27,7 +27,10 @@ def chart(y, height=310):
         template="plotly_white", height=height, margin=dict(l=14, r=22, t=40, b=18),
         paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
         font=dict(family="Arial, sans-serif", color="#243b52", size=12),
-        hovermode="closest", hoverlabel=dict(bgcolor="#172c42", font_color="#ffffff"),
+        hovermode="closest",
+        hoverlabel=dict(bgcolor="#ffffff", bordercolor="#d5dfe8", align="left",
+                        font=dict(family="Arial, sans-serif", color="#243b52", size=12),
+                        namelength=-1),
         legend=dict(orientation="h", y=1.025, x=0, yanchor="bottom", font_size=11, groupclick="togglegroup"),
         yaxis=dict(title=y, tickformat=",.3~f", gridcolor="#e7edf3", zerolinecolor="#aebfcd", automargin=True),
         xaxis=dict(gridcolor="#eef3f7", automargin=True, tickfont=dict(color="#516478")),
@@ -88,7 +91,7 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
         x=x, y=y, name=name, mode="lines" if len(observed) > 1 else "markers", connectgaps=False,
         line=dict(color=color, width=2.35, dash=pattern), marker=dict(size=6, color=color),
         legendgroup=name, customdata=metadata if custom else None,
-        hovertemplate=hover + "<extra>%{fullData.name}</extra>",
+        hovertemplate="<b>%{fullData.name}</b><br>" + hover + "<extra></extra>",
     )
     if bridge_x:
         fig.add_scatter(
@@ -147,9 +150,8 @@ def prices(local, days, bounds, key, mode):
         name, source = local[leg]
         data = indicators(timeline(source, days)).loc[bounds[0]:bounds[1]].copy()
         data["Delivery"] = [delivery_label(t, d) if pd.notna(t) else "—" for t, d in zip(data.tenor, data.delivery_start)]
-        data["Code"] = data["rolling"].fillna("—")
-        hover = VALUE_HOVER + "<br>Delivery %{customdata[0]}<br>Code %{customdata[1]}"
-        draw_segments(fig, data, "price", name, index, hover, ["Delivery", "Code"], level=True)
+        hover = VALUE_HOVER + ("<br>Contract  %{customdata[0]}" if mode == "Rolling" else "")
+        draw_segments(fig, data, "price", name, index, hover, ["Delivery"], level=True)
         for label, columns in {
             "5-day MA": [("ma5", "5-day MA")],
             "20-day MA": [("ma20", "20-day MA")],
@@ -226,7 +228,7 @@ def curves(data, market, tenor, targets, key):
                 name=f"{name} · {day:%d %b %y}",
                 line=dict(color=COLORS[trace % len(COLORS)], dash=DASHES[trace % len(DASHES)], width=2.5),
                 marker=dict(size=5),
-                hovertemplate="%{x}<br>%{y:,.3~f}<extra>%{fullData.name}</extra>",
+                hovertemplate="<b>%{fullData.name}</b><br>%{x}<br><b>%{y:,.3~f}</b><extra></extra>",
             )
             trace += 1
     if fig.data:
@@ -259,7 +261,7 @@ def curve_changes(data, tenor, mode, targets, lookback, key):
                         y=changes.index.strftime("%d %b %Y"), z=changes.to_numpy(), zmid=0,
                         colorscale=[[0, "#a74f6a"], [.5, "#f6f8fb"], [1, "#177b81"]],
                         colorbar=dict(title=unit_label(*unit)),
-                        hovertemplate="%{y} · %{x}<br>%{z:+,.3~f}<extra></extra>")
+                        hovertemplate="<b>%{y}</b><br>%{x}<br><b>%{z:+,.3~f}</b><extra></extra>")
         fig.update_xaxes(type="category", title="Delivery period")
         fig.update_yaxes(nticks=10)
         display(fig, key + "_heatmap")
@@ -283,5 +285,6 @@ def curve_changes(data, tenor, mode, targets, lookback, key):
     fig.add_bar(x=[delivery_label(tenor, day) for day in delta.index], y=delta, texttemplate="%{y:+,.3~f}",
                 textposition="outside", cliponaxis=False,
                 marker_color=["#177b81" if value >= 0 else "#a74f6a" for value in delta],
-                hovertemplate="%{x}<br>%{y:+,.3~f}<extra>Assessment change</extra>")
+                hovertemplate=f"<b>%{{x}}</b><br>{previous:%d %b} – {anchor:%d %b %Y}"
+                              "<br><b>%{y:+,.3~f}</b><extra></extra>")
     display(fig, key + "_curve_moves")

@@ -1,20 +1,57 @@
 import hashlib
 import json
+import re
 
 import streamlit as st
+from streamlit.components.v2 import component
 
 
-def _remember(key, default, decode, render, persist):
+_browser_memory = component(
+    "ffa_browser_preferences",
+    html="<span></span>",
+    js="""
+    export default function({ data, setStateValue }) {
+        const key = "baltic-ffa-preferences-v1";
+        if (data === null) {
+            let saved = {};
+            try { saved = JSON.parse(localStorage.getItem(key) || "{}"); } catch {}
+            setStateValue("saved", saved);
+        } else {
+            try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+        }
+    }
+    """,
+)
+
+
+def restore_preferences():
     memory = st.session_state.setdefault("_ffa_preferences", {})
-    if persist and "_ffa_url_loaded" not in st.session_state:
-        try:
-            stored = json.loads(st.query_params.get("view", "{}"))
-            if isinstance(stored, dict):
-                memory.update(stored)
-        except ValueError:
-            pass
-        st.session_state["_ffa_url_loaded"] = True
+    loaded = st.session_state.get("_ffa_browser_loaded", False)
+    result = _browser_memory(
+        data=memory if loaded else None, key="ffa_browser_memory",
+        default={"saved": None}, on_saved_change=lambda: None, height=0,
+    )
+    if loaded:
+        return
+    saved = result.saved
+    if saved is None:
+        st.stop()
+    if not isinstance(saved, dict):
+        saved = {}
+    try:
+        legacy = json.loads(st.query_params.get("view", "{}"))
+        if isinstance(legacy, dict):
+            memory.update(legacy)
+    except ValueError:
+        pass
+    memory.update({key: value for key, value in saved.items()
+                   if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{12}", key)})
+    st.session_state["_ffa_browser_loaded"] = True
+    st.rerun()
 
+
+def _remember(key, default, decode, render):
+    memory = st.session_state.setdefault("_ffa_preferences", {})
     short = hashlib.blake2s(key.encode(), digest_size=6).hexdigest()
     widget_key = "ffa_" + short
 
@@ -22,18 +59,11 @@ def _remember(key, default, decode, render, persist):
         value = st.session_state[widget_key]
         memory.pop(short, None)
         memory[short] = encode(value)
-        if persist:
-            stored = {k: v for k, v in memory.items() if not k.startswith("_")}
-            while len(json.dumps(stored, separators=(",", ":"))) > 4200 and len(stored) > 1:
-                del stored[next(iter(stored))]
-            st.query_params["view"] = json.dumps(stored, separators=(",", ":"))
 
     encoded = memory.get(short)
     restored = decode(encoded, default)
-    if widget_key in st.session_state:
-        current = st.session_state[widget_key]
-        if decode(encode(current), default) != current:
-            st.session_state.pop(widget_key)
+    current = st.session_state.get(widget_key, restored)
+    st.session_state[widget_key] = decode(encode(current), restored)
     return render(restored, widget_key, save)
 
 
@@ -45,7 +75,7 @@ def encode(value):
     return value
 
 
-def choice(label, options, key, default=None, *, container=st, control="selectbox", persist=True, **kwargs):
+def choice(label, options, key, default=None, *, container=st, control="selectbox", **kwargs):
     options = list(options)
     default = default if default in options else options[0]
 
@@ -54,11 +84,11 @@ def choice(label, options, key, default=None, *, container=st, control="selectbo
 
     def render(value, widget_key, save):
         if control == "segmented_control":
-            return container.segmented_control(label, options, default=value, key=widget_key,
+            return container.segmented_control(label, options, key=widget_key,
                                                on_change=save, **kwargs) or value
-        return getattr(container, control)(label, options, index=options.index(value), key=widget_key,
+        return getattr(container, control)(label, options, key=widget_key,
                                            on_change=save, **kwargs)
-    return _remember(key, default, decode, render, persist)
+    return _remember(key, default, decode, render)
 
 
 def multi(label, options, key, default, limit, *, container=st, format_func=str):
@@ -73,16 +103,16 @@ def multi(label, options, key, default, limit, *, container=st, format_func=str)
     return _remember(
         key, list(default), decode,
         lambda value, widget_key, save: container.multiselect(
-            label, options, default=value, key=widget_key, on_change=save,
+            label, options, key=widget_key, on_change=save,
             max_selections=limit, format_func=format_func,
-        ), True,
+        ),
     )
 
 
 def toggle(label, key, default=False, *, container=st):
     return _remember(
         key, default, lambda raw, fallback: raw if isinstance(raw, bool) else fallback,
-        lambda value, widget_key, save: container.toggle(label, value=value, key=widget_key, on_change=save), True,
+        lambda value, widget_key, save: container.toggle(label, key=widget_key, on_change=save),
     )
 
 
@@ -99,6 +129,6 @@ def calendar(label, key, default, earliest, latest, *, container=st):
     return _remember(
         key, default, decode,
         lambda value, widget_key, save: container.date_input(
-            label, value=value, min_value=earliest, max_value=latest, key=widget_key, on_change=save,
-        ), True,
+            label, min_value=earliest, max_value=latest, key=widget_key, on_change=save,
+        ),
     )
