@@ -130,13 +130,15 @@ def average_history(groups, bounds, unit, key):
             if means.empty:
                 continue
             means = means.set_index("date")
-            hover = (
-                "%{customdata[0]}<br>Mean  <b>%{y:,.3~f}</b>"
-                "<br>%{customdata[1]} assessments"
-                "<br>Observed  %{customdata[2]}<br>%{customdata[3]}<br>%{customdata[4]}"
-            )
-            draw_segments(fig, means, "price", name, index, hover,
-                          ["period", "samples", "observed", "clipped", "contract"])
+            details = []
+            for row in means.itertuples():
+                value = f"{row.price:,.3f}".rstrip("0").rstrip(".")
+                lines = [row.period, f"Mean  <b>{value}</b>",
+                         f"{row.samples} assessments", f"Observed  {row.observed}"]
+                lines.extend(note for note in (row.clipped, row.contract) if note)
+                details.append("<br>".join(lines))
+            means["Details"] = details
+            draw_segments(fig, means, "price", name, index, "%{customdata[0]}", ["Details"])
             fig.data[-1].mode = "lines+markers"
             fig.data[-1].marker.size = 5
         if not fig.data:
