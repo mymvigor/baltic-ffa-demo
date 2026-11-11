@@ -152,6 +152,45 @@ def average_history(groups, bounds, unit, key):
         display(fig, key + "_averages_chart")
 
 
+def bollinger_history(groups, bounds, unit, key):
+    groups = {name: sources for name, sources in groups.items() if sources}
+    if not groups:
+        return
+    with st.expander("Bollinger bands"):
+        left, right = st.columns(2)
+        view = choice("Measure", groups, key + "_bb_view", container=left) if len(groups) > 1 else next(iter(groups))
+        sources = groups[view]
+        names = [source[0] for source in sources]
+        selected = choice("Series", names, key + "_bb_series", container=right) if len(names) > 1 else names[0]
+        name, source, column = next(item for item in sources if item[0] == selected)
+        data = source.copy()
+        data["price"] = data[column]
+        data = indicators(data).loc[bounds[0]:bounds[1]]
+        valid = data.upper.notna() & data.lower.notna()
+        if not valid.any():
+            st.info("Bollinger bands need 20 valid assessments within the same contract segment.")
+            return
+        measure_unit = unit[view] if isinstance(unit, dict) else unit
+        fig = chart(measure_unit, height=285)
+        # Shade each continuous run separately so fills cannot bridge rolls or missing quotes.
+        breaks = data.segment.ne(data.segment.shift()) | ~valid | ~valid.shift(fill_value=False)
+        for index, (_, run) in enumerate(data[valid].groupby(breaks[valid].cumsum())):
+            for column, label in (("lower", "Lower band"), ("upper", "Upper band")):
+                fig.add_scatter(
+                    x=run.index, y=run[column], mode="lines", name=label, legendgroup=label,
+                    showlegend=index == 0, line=dict(color="#6c8a9d", width=1, dash="dot"),
+                    fill="tonexty" if column == "upper" else None,
+                    fillcolor="rgba(23,123,129,0.09)", connectgaps=False,
+                    hovertemplate="<b>%{fullData.name}</b><br>" + VALUE_HOVER + "<extra></extra>",
+                )
+        draw_segments(fig, data, "price", name, 0, VALUE_HOVER)
+        draw_segments(fig, data, "ma20", "20-day MA", 1, VALUE_HOVER, dash="dash")
+        st.caption("20-assessment mean ± 2 standard deviations (population). "
+                   "Valid quotation days only; calculations restart at each contract roll.")
+        date_axis(fig, bounds)
+        display(fig, key + "_bollinger_chart")
+
+
 def prices(local, days, bounds, key, mode):
     if not local:
         st.info("No price series are available.")
@@ -192,11 +231,12 @@ def prices(local, days, bounds, key, mode):
     average_sources = []
     for index, leg in enumerate(selected):
         name, source = local[leg]
-        data = indicators(timeline(source, days)).loc[bounds[0]:bounds[1]].copy()
+        history = timeline(source, days)
+        data = indicators(history).loc[bounds[0]:bounds[1]].copy()
         data["Delivery"] = [delivery_label(t, d) if pd.notna(t) else "—" for t, d in zip(data.tenor, data.delivery_start)]
         hover = VALUE_HOVER + ("<br>Contract  %{customdata[0]}" if mode == "Rolling" else "")
         draw_segments(fig, data, "price", name, index, hover, ["Delivery"], level=True)
-        average_sources.append((name, data, "price"))
+        average_sources.append((name, history, "price"))
         for label, columns in {
             "5-day MA": [("ma5", "5-day MA")],
             "20-day MA": [("ma20", "20-day MA")],
@@ -208,6 +248,7 @@ def prices(local, days, bounds, key, mode):
     if fig.data:
         date_axis(fig, bounds)
         display(fig, key + "_price_chart")
+        bollinger_history({"Prices": average_sources}, bounds, unit_label(*unit), key + mode)
         average_history({"Prices": average_sources}, bounds, unit_label(*unit), key + mode)
     else:
         st.info("No valid prices in the selected window.")

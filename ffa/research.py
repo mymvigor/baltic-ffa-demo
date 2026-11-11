@@ -5,7 +5,7 @@ import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
 from .preferences import choice, multi, toggle
-from .ui import COLORS, VALUE_HOVER, average_history, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
+from .ui import COLORS, VALUE_HOVER, average_history, bollinger_history, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
 def prepared(rows, days):
@@ -106,13 +106,15 @@ def spot_comparison(local, days, bounds, key):
          unified=show_spot)
     if show_basis:
         basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=235)
-        view = result.loc[window].copy()
-        view["percent"] = 100 * view.price / view.b.where(view.b.gt(0))
+        percent = result.copy()
+        percent["percent"] = 100 * percent.price / percent.b.where(percent.b.gt(0))
+        view = percent.loc[window]
         show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", "BFA − Spot", 0)
         show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range.")
         if measure == "Percent":
-            average_groups["Basis"] = [("BFA − Spot (%)", view, "percent")]
+            average_groups["Basis"] = [("BFA − Spot (%)", percent, "percent")]
             average_units["Basis"] = "% of spot"
+    bollinger_history(average_groups, bounds, average_units, key + "_spot")
     average_history(average_groups, bounds, average_units, key + "_spot")
     return basis
 
@@ -163,6 +165,7 @@ def calendar_spreads(local, days, bounds, key):
     fig = chart(unit_label(*unit), height=315)
     show_pair(fig, result.loc[bounds[0]:bounds[1]], "price", name, 0)
     show(fig, bounds, key + "_calendar_chart", "No same-day quotes with confirmed near-before-far delivery in this range.")
+    bollinger_history({"Spread": [(name, result, "price")]}, bounds, unit_label(*unit), key + "_calendar")
     average_history({"Spread": [(name, result, "price")]}, bounds, unit_label(*unit), key + "_calendar")
     return {name: (unit, result)}
 
@@ -268,10 +271,11 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
             data["delivery_start"] = pd.NaT
             data["delivery_end"] = pd.NaT
             panels.append(data)
-        result = paired(*panels, divide=method == "Ratio", align=align).loc[window]
+        history = paired(*panels, divide=method == "Ratio", align=align)
+        result = history.loc[window]
         fig = chart("Ratio" if method == "Ratio" else unit_label(*unit))
         show_pair(fig, result, "price", f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", 0)
-        average_sources.append((f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", result, "price"))
+        average_sources.append((f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", history, "price"))
         average_unit = "Ratio" if method == "Ratio" else unit_label(*unit)
         if align:
             st.caption("Cross-vessel BFA legs are matched by date and actual delivery period.")
@@ -296,16 +300,17 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
                 average_sources.append((name(item), derived[item][1], "price"))
                 continue
             data = raw[item]
-            values = indicators(data).loc[window].copy() if column != "price" else data.loc[window].copy()
+            values = indicators(data).copy() if column != "price" else data.copy()
             if column == "change":
                 values[column] *= 100
             if base_day is not None:
                 values = values.loc[base_day:].copy()
                 values[column] = 100 * values[column] / data.loc[base_day, "price"]
-            draw_history(fig, values, column, name(item), index)
+            draw_history(fig, values.loc[window], column, name(item), index)
             average_sources.append((name(item), values, column))
 
     show(fig, bounds, key + "_workspace", "No matched prices or sufficient history for the selected view.")
+    bollinger_history({"Selected series": average_sources}, bounds, average_unit, key + "_workspace")
     average_history({"Selected series": average_sources}, bounds, average_unit, key + "_workspace")
 
 
