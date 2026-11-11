@@ -58,7 +58,7 @@ def same_day_hover(fig, forward, spot, forward_name):
             labels.append(f"{label}<b>{number}</b>")
         fig.add_scatter(
             x=prices.index, y=values.fillna(anchor), name=name, legendgroup=name,
-            mode="markers", marker=dict(size=0, color=COLORS[index]), showlegend=False,
+            mode="markers", marker=dict(size=0.01, color=COLORS[index]), showlegend=False,
             text=labels, hovertemplate="%{text}<extra></extra>",
         )
 
