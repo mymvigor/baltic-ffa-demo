@@ -82,6 +82,27 @@ def indicators(data):
     return out
 
 
+def period_means(data, column, frequency, bounds):
+    visible = data.loc[bounds[0]:bounds[1]].dropna(subset=[column])
+    rows = []
+    periods = visible.index.to_period(frequency)
+    for (segment, period), group in visible.groupby(["segment", periods], sort=True):
+        clipped = bounds[0] > period.start_time or bounds[1].normalize() < period.end_time.normalize()
+        contract = ""
+        if "delivery_start" in visible and visible.delivery_start.nunique() > 1:
+            row = group.iloc[0]
+            contract = "Contract  " + delivery_label(row.tenor, row.delivery_start)
+        rows.append({
+            "date": group.index[-1], "segment": segment,
+            "price": group[column].mean(), "samples": len(group),
+            "period": f"{period.start_time:%d %b %Y} – {period.end_time:%d %b %Y}",
+            "observed": f"{group.index[0]:%d %b} – {group.index[-1]:%d %b %Y}",
+            "clipped": "Selected dates cover part of this period" if clipped else "",
+            "contract": contract,
+        })
+    return pd.DataFrame(rows, columns=["date", "segment", "price", "samples", "period", "observed", "clipped", "contract"])
+
+
 def compare(a, b, divide, align, window):
     result = pd.DataFrame(index=a.index)
     result["a"] = a.price

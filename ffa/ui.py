@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from .analytics import delivery_label, indicators, snapshots, timeline, unit_label
+from .analytics import delivery_label, indicators, period_means, snapshots, timeline, unit_label
 from .model import VESSELS
 from .preferences import choice, multi, toggle
 
@@ -109,6 +109,47 @@ def rolling_leg(local, suffix, unit=None):
     ), None)
 
 
+def average_history(groups, bounds, unit, key):
+    groups = {name: sources for name, sources in groups.items() if sources}
+    if not groups:
+        return
+    with st.expander("Period averages"):
+        left, right = st.columns(2)
+        frequency = choice(
+            "Average by", ["Weekly", "Monthly", "Quarterly", "Yearly"],
+            key + "_average_frequency", "Monthly", container=left,
+        )
+        view = choice("Measure", groups, key + "_average_view", container=right) if len(groups) > 1 else next(iter(groups))
+        sources, measure_unit = groups[view], unit
+        if isinstance(unit, dict):
+            measure_unit = unit[view]
+        fig = chart(measure_unit, height=255)
+        rule = {"Weekly": "W-SUN", "Monthly": "M", "Quarterly": "Q-DEC", "Yearly": "Y-DEC"}[frequency]
+        for index, (name, data, column) in enumerate(sources):
+            means = period_means(data, column, rule, bounds)
+            if means.empty:
+                continue
+            means = means.set_index("date")
+            hover = (
+                "%{customdata[0]}<br>Mean  <b>%{y:,.3~f}</b>"
+                "<br>%{customdata[1]} assessments"
+                "<br>Observed  %{customdata[2]}<br>%{customdata[3]}<br>%{customdata[4]}"
+            )
+            draw_segments(fig, means, "price", name, index, hover,
+                          ["period", "samples", "observed", "clipped", "contract"])
+            fig.data[-1].mode = "lines+markers"
+            fig.data[-1].marker.size = 5
+        if not fig.data:
+            st.info("No valid assessments in the selected dates.")
+            return
+        st.caption("Arithmetic means of available assessments within the selected dates. "
+                   "Weeks run Monday–Sunday. Contract rolls are averaged separately. "
+                   "Spreads and ratios are calculated daily before averaging. "
+                   "Each point is placed on its last observed assessment date.")
+        date_axis(fig, bounds)
+        display(fig, key + "_averages_chart")
+
+
 def prices(local, days, bounds, key, mode):
     if not local:
         st.info("No price series are available.")
@@ -146,12 +187,14 @@ def prices(local, days, bounds, key, mode):
         return
 
     fig = chart(unit_label(*unit))
+    average_sources = []
     for index, leg in enumerate(selected):
         name, source = local[leg]
         data = indicators(timeline(source, days)).loc[bounds[0]:bounds[1]].copy()
         data["Delivery"] = [delivery_label(t, d) if pd.notna(t) else "—" for t, d in zip(data.tenor, data.delivery_start)]
         hover = VALUE_HOVER + ("<br>Contract  %{customdata[0]}" if mode == "Rolling" else "")
         draw_segments(fig, data, "price", name, index, hover, ["Delivery"], level=True)
+        average_sources.append((name, data, "price"))
         for label, columns in {
             "5-day MA": [("ma5", "5-day MA")],
             "20-day MA": [("ma20", "20-day MA")],
@@ -163,6 +206,7 @@ def prices(local, days, bounds, key, mode):
     if fig.data:
         date_axis(fig, bounds)
         display(fig, key + "_price_chart")
+        average_history({"Prices": average_sources}, bounds, unit_label(*unit), key + mode)
     else:
         st.info("No valid prices in the selected window.")
 

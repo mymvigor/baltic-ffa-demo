@@ -5,7 +5,7 @@ import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
 from .preferences import choice, multi, toggle
-from .ui import COLORS, VALUE_HOVER, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
+from .ui import COLORS, VALUE_HOVER, average_history, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
 def prepared(rows, days):
@@ -89,6 +89,8 @@ def spot_comparison(local, days, bounds, key):
     forward_name = "BFA · " + name
     price_fig = chart(unit_label(*unit))
     draw_history(price_fig, forward.loc[window], "price", forward_name, 0)
+    average_groups = {"Prices": [(forward_name, forward, "price")]}
+    average_units = {"Prices": unit_label(*unit)}
     basis = {}
     if spot:
         spot_data = prepared(local[spot][1], days)
@@ -97,6 +99,9 @@ def spot_comparison(local, days, bounds, key):
         if show_spot:
             draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
             same_day_hover(price_fig, forward.loc[window], spot_data.loc[window], forward_name)
+            average_groups["Prices"].append(("Spot", spot_data, "price"))
+            average_groups["Basis"] = [("BFA − Spot", result, "price")]
+            average_units["Basis"] = unit_label(*unit)
     show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.",
          unified=show_spot)
     if show_basis:
@@ -105,6 +110,10 @@ def spot_comparison(local, days, bounds, key):
         view["percent"] = 100 * view.price / view.b.where(view.b.gt(0))
         show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", "BFA − Spot", 0)
         show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range.")
+        if measure == "Percent":
+            average_groups["Basis"] = [("BFA − Spot (%)", view, "percent")]
+            average_units["Basis"] = "% of spot"
+    average_history(average_groups, bounds, average_units, key + "_spot")
     return basis
 
 
@@ -154,6 +163,7 @@ def calendar_spreads(local, days, bounds, key):
     fig = chart(unit_label(*unit), height=315)
     show_pair(fig, result.loc[bounds[0]:bounds[1]], "price", name, 0)
     show(fig, bounds, key + "_calendar_chart", "No same-day quotes with confirmed near-before-far delivery in this range.")
+    average_history({"Spread": [(name, result, "price")]}, bounds, unit_label(*unit), key + "_calendar")
     return {name: (unit, result)}
 
 
@@ -242,6 +252,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
                  for day in rows.quote_day}
             ))
     window = slice(*bounds)
+    average_sources = []
     if pair:
         a, b = selected
         align = not isinstance(a, str) and not isinstance(b, str) and a[0] != b[0] and a[2] == b[2] == "BFA"
@@ -260,12 +271,15 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
         result = paired(*panels, divide=method == "Ratio", align=align).loc[window]
         fig = chart("Ratio" if method == "Ratio" else unit_label(*unit))
         show_pair(fig, result, "price", f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", 0)
+        average_sources.append((f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", result, "price"))
+        average_unit = "Ratio" if method == "Ratio" else unit_label(*unit)
         if align:
             st.caption("Cross-vessel BFA legs are matched by date and actual delivery period.")
     else:
         column = metrics[metric]
         label = "Index (100 = base)" if method == "Rebased to 100" else "%" if column == "change" else unit_label(*unit)
         fig = chart(label)
+        average_unit = label
         raw = {item: prepared(available[item][1], dates[item]) for item in selected if not isinstance(item, str)}
         base_day = None
         if method == "Rebased to 100":
@@ -279,6 +293,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
         for index, item in enumerate(selected):
             if isinstance(item, str):
                 show_pair(fig, derived[item][1].loc[window], "price", name(item), index)
+                average_sources.append((name(item), derived[item][1], "price"))
                 continue
             data = raw[item]
             values = indicators(data).loc[window].copy() if column != "price" else data.loc[window].copy()
@@ -288,8 +303,10 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
                 values = values.loc[base_day:].copy()
                 values[column] = 100 * values[column] / data.loc[base_day, "price"]
             draw_history(fig, values, column, name(item), index)
+            average_sources.append((name(item), values, column))
 
     show(fig, bounds, key + "_workspace", "No matched prices or sufficient history for the selected view.")
+    average_history({"Selected series": average_sources}, bounds, average_unit, key + "_workspace")
 
 
 def historical_context(local, days, basis, calendar, bounds, key):
