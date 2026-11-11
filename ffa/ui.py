@@ -162,29 +162,45 @@ def bollinger_history(groups, bounds, unit, key):
         sources = groups[view]
         names = [source[0] for source in sources]
         selected = choice("Series", names, key + "_bb_series", container=right) if len(names) > 1 else names[0]
+        controls = st.columns(5)
+        show_series = toggle("Series line", key + "_bb_show_series", default=True, container=controls[0])
+        show_mean = toggle("20-day MA", key + "_bb_show_mean", default=True, container=controls[1])
+        show_upper = toggle("Upper band", key + "_bb_show_upper", default=True, container=controls[2])
+        show_lower = toggle("Lower band", key + "_bb_show_lower", default=True, container=controls[3])
+        show_shading = toggle("Shading", key + "_bb_show_shading", default=False, container=controls[4])
+        if not any((show_series, show_mean, show_upper, show_lower, show_shading)):
+            st.info("Select a line or shading to display.")
+            return
         name, source, column = next(item for item in sources if item[0] == selected)
         data = source.copy()
         data["price"] = data[column]
         data = indicators(data).loc[bounds[0]:bounds[1]]
         valid = data.upper.notna() & data.lower.notna()
-        if not valid.any():
+        if not valid.any() and any((show_mean, show_upper, show_lower, show_shading)):
             st.info("Bollinger bands need 20 valid assessments within the same contract segment.")
-            return
         measure_unit = unit[view] if isinstance(unit, dict) else unit
         fig = chart(measure_unit, height=285)
         # Shade each continuous run separately so fills cannot bridge rolls or missing quotes.
         breaks = data.segment.ne(data.segment.shift()) | ~valid | ~valid.shift(fill_value=False)
         for index, (_, run) in enumerate(data[valid].groupby(breaks[valid].cumsum())):
-            for column, label in (("lower", "Lower band"), ("upper", "Upper band")):
+            for column, label, enabled in (("lower", "Lower band", show_lower), ("upper", "Upper band", show_upper)):
+                if not enabled and not show_shading:
+                    continue
                 fig.add_scatter(
                     x=run.index, y=run[column], mode="lines", name=label, legendgroup=label,
-                    showlegend=index == 0, line=dict(color="#6c8a9d", width=1, dash="dot"),
-                    fill="tonexty" if column == "upper" else None,
+                    showlegend=index == 0 and enabled,
+                    line=dict(color="#6c8a9d", width=1 if enabled else 0, dash="dot"),
+                    fill="tonexty" if show_shading and column == "upper" else None,
                     fillcolor="rgba(23,123,129,0.09)", connectgaps=False,
-                    hovertemplate="<b>%{fullData.name}</b><br>" + VALUE_HOVER + "<extra></extra>",
+                    hoverinfo=None if enabled else "skip",
+                    hovertemplate=("<b>%{fullData.name}</b><br>" + VALUE_HOVER + "<extra></extra>") if enabled else None,
                 )
-        draw_segments(fig, data, "price", name, 0, VALUE_HOVER)
-        draw_segments(fig, data, "ma20", "20-day MA", 1, VALUE_HOVER, dash="dash")
+        if show_series:
+            draw_segments(fig, data, "price", name, 0, VALUE_HOVER)
+        if show_mean:
+            draw_segments(fig, data, "ma20", "20-day MA", 1, VALUE_HOVER, dash="dash")
+        if not fig.data:
+            return
         st.caption("20-assessment mean ± 2 standard deviations (population). "
                    "Valid quotation days only; calculations restart at each contract roll.")
         date_axis(fig, bounds)
