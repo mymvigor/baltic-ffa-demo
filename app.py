@@ -10,11 +10,12 @@ from ffa.analytics import frame, options
 from ffa.demo import data as demo_data
 from ffa.history import merge_history, read_history, read_manifest
 from ffa.model import VESSELS
-from ffa.preferences import calendar, choice, restore_preferences
+from ffa.preferences import calendar, choice, multi, persist_preferences, restore_preferences
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.research import calendar_spreads, comparison_studies, comparison_workspace, historical_context, spot_comparison
 from ffa.ui import TENORS, curve_changes, curves, prices, section
+from ffa.spot import seasonality, spot_analysis
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -35,6 +36,7 @@ STYLE = """
     padding:.35rem .5rem; box-shadow:0 2px 10px rgba(19, 41, 65, .04);}
 [data-testid="stSidebarContent"] {border-right: 1px solid #e2e9ef;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
+[data-testid="stMetricValue"] {font-size:clamp(1rem,2.1vw,1.8rem);}
 .ffa-hero {background: linear-gradient(112deg,#101c30,#17354a); border:1px solid #263e53;
     border-radius: 16px; color: #f6fbff; padding: clamp(20px, 4vw, 46px); margin-bottom: .65rem;
     box-shadow: 0 8px 20px rgba(15, 34, 54, .12);}
@@ -53,7 +55,14 @@ STYLE = """
 def read_live(repo, credential_id, _token):
     with connect(repo, _token) as storage:
         data, _ = storage.load()
-        return market(data)
+        fixed, rolling, status = market(data)
+        return frame(fixed), frame(rolling), status
+
+
+@st.cache_data(max_entries=2, show_spinner=False)
+def read_demo():
+    fixed, rolling, status = demo_data()
+    return frame(fixed), frame(rolling), status
 
 
 def default_product(data, vessel):
@@ -179,10 +188,11 @@ def main():
             logging.warning("FFA archive index unavailable: %s", type(exc).__name__)
             st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
     else:
-        fixed, rolling, status = demo_data()
+        fixed, rolling, status = read_demo()
     show_status(status, vessel, live, fallback)
 
-    fixed, rolling = frame(fixed), frame(rolling)
+    if not isinstance(fixed, pd.DataFrame):
+        fixed, rolling = frame(fixed), frame(rolling)
     market_data = fixed[fixed.vessel.eq(vessel)]
     if market_data.empty:
         st.title(VESSELS[vessel])
@@ -225,116 +235,154 @@ def main():
         observed = market_data[market_data["product"].eq(product) & market_data.kind.eq("BFA") & market_data.tenor.eq(tenor)]
         return observed.quote_day.max().date() if not observed.empty else dates(product)[1]
 
-    price_key, curve_key, changes_key, term_key = (f"{vessel}_{panel}" for panel in ("price", "curve", "changes", "term"))
-    price_panel, curve_panel, changes_panel, term_panel = (st.container() for _ in range(4))
+    def load_window(start, end):
+        if not archive:
+            return fixed, rolling
+        # Include the full warm-up year, not just 20 calendar days.
+        warmup = (start - timedelta(days=60)).replace(month=1, day=1)
+        years = tuple(year for year in archive["years"] if warmup.year <= int(year) <= end.year)
+        if not years:
+            return fixed, rolling
+        try:
+            history = read_history(repo, credential_id, revision, years, warmup, end, token)
+            return merge_history(fixed, rolling, history)
+        except Exception:
+            st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
+            return fixed, rolling
 
-    with price_panel:
-        section(1, "Price Explorer", "Follow the benchmark, compare contracts, or build a two-leg spread.")
-        price_product = product_choice(price_key)
-        price_key += "_" + price_product
-        price_mode = choice("Analysis", ["Spot + BFA", "Multi-series", "Spread / Ratio"], price_key + "_view",
-                            control="segmented_control", label_visibility="collapsed")
-        price_bounds = assessment_window(*dates(price_product), price_key + price_mode)
+    def inputs(product, start, end):
+        complete, rolls = load_window(start, end)
+        current = complete[complete.vessel.eq(vessel) & complete["product"].eq(product)]
+        relative = rolls[rolls.vessel.eq(vessel) & rolls["product"].eq(product)]
+        days = pd.DatetimeIndex(sorted(current.quote_day.unique()))
+        return options(current, relative), days, current, complete, rolls
 
-    with curve_panel:
-        section(2, "Forward Curve", "Compare assessments by delivery period.")
-        curve_product = product_choice(curve_key)
-        curve_key += "_" + curve_product
-        curve_tenor = tenor_choice(curve_product, curve_key + "_tenor")
-        curve_latest = latest_forward(curve_product, curve_tenor)
-        offset = choice("Snapshots", ["7D", "30D", "Custom"], curve_key + "_snapshots",
-                        control="segmented_control")
-        curve_targets = [curve_latest, curve_latest - timedelta(days=7 if offset == "7D" else 30)]
+    @st.fragment
+    def spot_panel():
+        section(1, "Spot Analysis", "Spot Bollinger bands and separate MA5 / MA20 histories.")
+        key = f"{vessel}_spot"
+        product = product_choice(key)
+        key += "_" + product
+        bounds = assessment_window(*dates(product), key)
+        if bounds[0] <= bounds[1]:
+            local, days, *_ = inputs(product, *bounds)
+            spot_analysis(local, days, tuple(pd.Timestamp(day) for day in bounds), key)
+        else:
+            st.info("Choose a start date before the end date.")
+        persist_preferences(key)
+
+    @st.fragment
+    def price_panel():
+        section(2, "Price Explorer", "Follow the benchmark, compare contracts, or build a two-leg spread.")
+        key = f"{vessel}_price"
+        product = product_choice(key)
+        key += "_" + product
+        mode = choice("Analysis", ["Spot + BFA", "Multi-series", "Spread / Ratio"], key + "_view",
+                      control="segmented_control", label_visibility="collapsed")
+        bounds = assessment_window(*dates(product), key + mode)
+        if bounds[0] > bounds[1]:
+            st.info("Choose a start date before the end date.")
+        else:
+            local, days, _, complete, rolls = inputs(product, *bounds)
+            timestamps = tuple(pd.Timestamp(day) for day in bounds)
+            if mode == "Spot + BFA":
+                spot_comparison(local, days, timestamps, key)
+            else:
+                basis, calendar_studies = comparison_studies(local, days)
+                comparison_workspace(options(complete, rolls), local, basis, calendar_studies,
+                                     timestamps, key + mode, mode == "Spread / Ratio")
+        persist_preferences(key)
+
+    @st.fragment
+    def curve_panel():
+        section(3, "Forward Curve", "Compare assessments by delivery period.")
+        key = f"{vessel}_curve"
+        product = product_choice(key)
+        key += "_" + product
+        tenor = tenor_choice(product, key + "_tenor")
+        latest = latest_forward(product, tenor)
+        offset = choice("Snapshots", ["7D", "30D", "Custom"], key + "_snapshots", control="segmented_control")
+        targets = [latest, latest - timedelta(days=7 if offset == "7D" else 30)]
         if offset == "Custom":
             with st.popover("Assessment dates"):
-                count = choice("Snapshots", [1, 2, 3, 4], curve_key + "_count", 2, control="segmented_control")
-                curve_targets = [
-                    calendar(f"Assessment {i + 1}", curve_key + f"_date_{i}",
-                             max(global_first, curve_latest - timedelta(days=7 * i)), global_first, curve_latest)
-                    for i in range(count)
-                ]
+                count = choice("Snapshots", [1, 2, 3, 4], key + "_count", 2, control="segmented_control")
+                targets = [calendar(f"Assessment {i + 1}", key + f"_date_{i}",
+                                    max(global_first, latest - timedelta(days=7 * i)), global_first, latest)
+                           for i in range(count)]
+        _, _, current, complete, _ = inputs(product, min(targets), max(targets))
+        curves(current, complete, tenor, [pd.Timestamp(day) for day in targets], key)
+        persist_preferences(key)
 
-    with changes_panel:
-        section(3, "Curve Changes", "Compare the same fixed deliveries across assessment dates.")
-        changes_product = product_choice(changes_key)
-        changes_key += "_" + changes_product
-        changes_tenor = tenor_choice(changes_product, changes_key + "_tenor")
-        changes_latest = latest_forward(changes_product, changes_tenor)
-        change_mode = choice("Analysis", ["Repricing", "Heatmap"], changes_key + "_view",
-                             control="segmented_control", label_visibility="collapsed")
-        changes_targets = [changes_latest, changes_latest - timedelta(days=7)]
-        lookback = 20
-        if change_mode == "Heatmap":
-            lookback = choice("Assessments", [20, 60, 120], changes_key + "_lookback", control="segmented_control",
+    @st.fragment
+    def changes_panel():
+        section(4, "Curve Changes", "Compare the same fixed deliveries across assessment dates.")
+        key = f"{vessel}_changes"
+        product = product_choice(key)
+        key += "_" + product
+        tenor = tenor_choice(product, key + "_tenor")
+        latest = latest_forward(product, tenor)
+        mode = choice("Analysis", ["Repricing", "Heatmap"], key + "_view", control="segmented_control",
+                      label_visibility="collapsed")
+        targets, lookback = [latest, latest - timedelta(days=7)], 20
+        if mode == "Heatmap":
+            lookback = choice("Assessments", [20, 60, 120], key + "_lookback", control="segmented_control",
                               format_func=lambda count: f"{count}D")
         else:
             with st.popover("Repricing dates"):
-                custom = choice("Dates", ["Latest vs 7D ago", "Custom"], changes_key + "_dates", control="segmented_control")
+                custom = choice("Dates", ["Latest vs 7D ago", "Custom"], key + "_dates", control="segmented_control")
                 if custom == "Custom":
-                    changes_targets = [
-                        calendar("To", changes_key + "_to", changes_latest, global_first, changes_latest),
-                        calendar("From", changes_key + "_from", max(global_first, changes_targets[1]), global_first, changes_latest),
-                    ]
+                    targets = [calendar("To", key + "_to", latest, global_first, latest),
+                               calendar("From", key + "_from", max(global_first, targets[1]), global_first, latest)]
+        _, _, current, *_ = inputs(product, min(*targets, latest - timedelta(days=lookback * 2 + 20)), max(targets))
+        curve_changes(current, tenor, mode, [pd.Timestamp(day) for day in targets], lookback, key)
+        persist_preferences(key)
 
-    with term_panel:
-        section(4, "Term Structure", "Fixed deliveries and rolling contract histories.")
-        term_product = product_choice(term_key)
-        term_key += "_" + term_product
-        term_mode = choice("Series", ["Fixed", "Rolling"], term_key + "_mode", control="segmented_control")
-        term_bounds = assessment_window(*dates(term_product), term_key + term_mode)
+    @st.fragment
+    def term_panel():
+        section(5, "Term Structure", "Fixed deliveries, rolling histories, calendar spreads and historical context.")
+        key = f"{vessel}_term"
+        product = product_choice(key)
+        key += "_" + product
+        mode = choice("Series", ["Fixed", "Rolling"], key + "_mode", control="segmented_control")
+        bounds = assessment_window(*dates(product), key + mode)
+        if bounds[0] > bounds[1]:
+            st.info("Choose a start date before the end date.")
+        else:
+            local, days, *_ = inputs(product, *bounds)
+            timestamps = tuple(pd.Timestamp(day) for day in bounds)
+            if mode == "Rolling":
+                st.caption("Unadjusted prices. Lines break at contract rolls; diamonds mark the roll date. MA5 / MA20 and Bollinger bands restart for each delivery contract.")
+            prices(local, days, timestamps, key, mode)
+            calendar_studies = calendar_spreads({leg: value for leg, value in local.items() if leg[6] == mode},
+                                               days, timestamps, key + mode)
+            basis, _ = comparison_studies(local, days)
+            historical_context(local, days, basis, calendar_studies, timestamps, key)
+        persist_preferences(key)
 
-    if archive:
-        start = min(*price_bounds, *term_bounds, *curve_targets, *changes_targets,
-                    changes_latest - timedelta(days=lookback * 2 + 20))
-        warmup = start - timedelta(days=35)
-        end = max(*price_bounds, *term_bounds, *curve_targets, *changes_targets)
-        years = tuple(year for year in archive["years"] if warmup.year <= year <= end.year)
+    @st.fragment
+    def seasonal_panel():
+        section(6, "Seasonality", "Compare Spot or the same rolling tenor across calendar years. Fixed deliveries stay in Term Structure.")
+        key = f"{vessel}_seasonal"
+        product = product_choice(key)
+        key += "_" + product
+        latest = dates(product)[1]
+        available = sorted({int(year) for year in archive.get("years", []) if int(year) <= latest.year}
+                           | set(market_data.loc[market_data["product"].eq(product), "quote_day"].dt.year), reverse=True)
+        years = multi("Compare years", available, key + "_years", available[:5], len(available))
         if years:
-            try:
-                history = read_history(repo, credential_id, revision, years, warmup, end, token)
-                fixed, rolling = merge_history(fixed, rolling, history)
-            except Exception:
-                st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
-
-    def rows(product, dataset=fixed):
-        return dataset[dataset.vessel.eq(vessel) & dataset["product"].eq(product)]
-
-    def price_inputs(product):
-        data = rows(product)
-        return options(data, rows(product, rolling)), pd.DatetimeIndex(sorted(data.quote_day.unique()))
-
-    basis = {}
-    with price_panel:
-        local, days = price_inputs(price_product)
-        bounds = tuple(pd.Timestamp(day) for day in price_bounds)
-        if price_bounds[0] > price_bounds[1]:
-            st.info("Choose a start date before the end date.")
-        elif price_mode == "Spot + BFA":
-            basis = spot_comparison(local, days, bounds, price_key)
+            start, end = pd.Timestamp(min(years), 1, 1).date(), min(pd.Timestamp(max(years), 12, 31).date(), latest)
+            local, days, *_ = inputs(product, start, end)
+            seasonality(local, days, years, key)
         else:
-            study_basis, study_calendar = comparison_studies(local, days)
-            comparison_workspace(options(fixed, rolling), local, study_basis, study_calendar, bounds,
-                                 price_key + price_mode, price_mode == "Spread / Ratio")
+            st.info("Select at least one year.")
+        persist_preferences(key)
 
-    with curve_panel:
-        curves(rows(curve_product), fixed, curve_tenor, [pd.Timestamp(day) for day in curve_targets], curve_key)
-
-    with changes_panel:
-        curve_changes(rows(changes_product), changes_tenor, change_mode,
-                      [pd.Timestamp(day) for day in changes_targets], lookback, changes_key)
-
-    with term_panel:
-        local, days = price_inputs(term_product)
-        bounds = tuple(pd.Timestamp(day) for day in term_bounds)
-        if term_bounds[0] > term_bounds[1]:
-            st.info("Choose a start date before the end date.")
-        else:
-            if term_mode == "Rolling":
-                st.caption("Dotted links mark contract rolls or gaps longer than seven days.")
-            prices(local, days, bounds, term_key, term_mode)
-            calendar_studies = calendar_spreads(
-                {leg: value for leg, value in local.items() if leg[6] == term_mode}, days, bounds, term_key + term_mode)
-            historical_context(local, days, basis if term_product == price_product else {}, calendar_studies, bounds, term_key)
+    spot_panel()
+    price_panel()
+    curve_panel()
+    changes_panel()
+    term_panel()
+    seasonal_panel()
 
 
 if __name__ == "__main__":

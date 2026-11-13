@@ -55,30 +55,38 @@ def options(fixed, rolling):
 
 def timeline(rows, days):
     out = rows.set_index("quote_day").sort_index().reindex(days)
-    known = out.delivery_start.dt.strftime("%Y-%m-%d").fillna("")
+    known = (out.tenor.fillna("") + "|" + out.delivery_start.dt.strftime("%Y-%m-%d").fillna("")
+             + "|" + out.delivery_end.dt.strftime("%Y-%m-%d").fillna(""))
+    resolved = out.delivery_start.notna() & out.delivery_end.notna()
     spot = out.kind.eq("Spot")
     observed = out.price.notna()
     # An unresolved quote has no demonstrably continuous delivery segment.
-    tokens = known.where(known.ne(""), pd.Series(days.strftime("unknown-%Y-%m-%d"), index=days))
+    tokens = known.where(resolved, pd.Series(days.strftime("unknown-%Y-%m-%d"), index=days))
     tokens = tokens.mask(spot, "spot").where(observed).ffill()
     out["segment"] = tokens.ne(tokens.shift()).cumsum()
+    # Retain boundary metadata before display windows are clipped.
+    active = out.loc[observed]
+    confirmed = active.delivery_start.notna() & active.delivery_end.notna() & active.kind.ne("Spot")
+    rolls = active.segment.ne(active.segment.shift()) & confirmed & confirmed.shift(fill_value=False)
+    contracts = active.delivery_start.dt.strftime("%Y-%m-%d") + " → " + active.delivery_end.dt.strftime("%Y-%m-%d")
+    out["roll_from"] = contracts.shift().where(rolls)
+    out["roll_to"] = contracts.where(rolls)
     return out
 
 
 def indicators(data):
     out = data.copy()
-    for column in ("ma5", "ma20", "upper", "lower", "change"):
-        out[column] = float("nan")
-    for _, group in out.groupby("segment"):
-        values = group.price.dropna()
-        out.loc[values.index, "ma5"] = values.rolling(5).mean()
-        mean = values.rolling(20).mean()
-        deviation = values.rolling(20).std(ddof=0)
-        out.loc[values.index, "ma20"] = mean
-        out.loc[values.index, "upper"] = mean + 2 * deviation
-        out.loc[values.index, "lower"] = mean - 2 * deviation
-        # A missing observed market day also prevents a one-day change.
-        out.loc[group.index, "change"] = group.price.pct_change(fill_method=None).where(group.price.shift().ne(0))
+    observed = out.dropna(subset=["price"])
+    grouped = observed.groupby("segment").price
+    out["ma5"] = grouped.rolling(5, min_periods=5).mean().droplevel(0)
+    window = grouped.rolling(20, min_periods=20)
+    mean, deviation = window.mean().droplevel(0), window.std(ddof=0).droplevel(0)
+    out["ma20"] = mean
+    out["upper"] = mean + 2 * deviation
+    out["lower"] = mean - 2 * deviation
+    # Missing market days prevent a one-day change, but do not count towards MA windows.
+    previous = out.groupby("segment").price.shift()
+    out["change"] = (out.price / previous.where(previous.ne(0)) - 1)
     return out
 
 
@@ -115,18 +123,18 @@ def compare(a, b, divide, align, window):
         valid &= (a.tenor == b.tenor) & a.delivery_start.notna() & (a.delivery_start == b.delivery_start) & (a.delivery_end == b.delivery_end)
     value = a.price / b.price.where(b.price.ne(0)) if divide else a.price - b.price
     result["price"] = value.where(valid)
-    for column in ("mean", "p10", "p90", "z", "samples"):
-        result[column] = float("nan")
-    for _, group in result.groupby("segment"):
-        values = group.price.dropna()
-        rolling = values.rolling(window)
-        mean = rolling.mean()
-        std = rolling.std(ddof=0)
-        result.loc[values.index, "mean"] = mean
-        result.loc[values.index, "p10"] = rolling.quantile(0.1)
-        result.loc[values.index, "p90"] = rolling.quantile(0.9)
-        result.loc[values.index, "z"] = (values - mean) / std.where(std.ne(0))
-        result.loc[values.index, "samples"] = values.expanding().count().clip(upper=window)
+    roll = a.get("roll_from", pd.Series(index=a.index, dtype=object)).notna() | b.get("roll_from", pd.Series(index=b.index, dtype=object)).notna()
+    result["roll_from"] = ("A: " + result.a_period.shift().fillna("—") + " / B: " + result.b_period.shift().fillna("—")).where(roll)
+    result["roll_to"] = ("A: " + result.a_period + " / B: " + result.b_period).where(roll)
+    observed = result.dropna(subset=["price"])
+    grouped = observed.groupby("segment")
+    rolling = grouped.price.rolling(window, min_periods=window)
+    result["mean"] = rolling.mean().droplevel(0)
+    result["p10"] = rolling.quantile(0.1).droplevel(0)
+    result["p90"] = rolling.quantile(0.9).droplevel(0)
+    std = rolling.std(ddof=0).droplevel(0).reindex(result.index)
+    result["z"] = (result.price - result["mean"]) / std.where(std.ne(0))
+    result["samples"] = (grouped.cumcount() + 1).clip(upper=window)
     return result
 
 
@@ -141,3 +149,30 @@ def snapshots(data, selected):
         for quote_day in selected
     }
 
+
+
+def monthly_spot(rows):
+    """Arithmetic mean of stored daily Spot quotes, never forward-filled.
+
+    Plot on each month's last observed quote date, so an unfinished month is not
+    plotted in the future. Empty months remain explicit gaps. Coverage is metadata,
+    not an assertion that all exchange trading days have been supplied.
+    """
+    values = rows.loc[rows.kind.eq("Spot")].set_index("quote_day").sort_index().price.dropna()
+    grouped = values.resample("MS")
+    out = grouped.agg(price="mean", samples="count")
+    dates = pd.Series(values.index, index=values.index)
+    out["first_day"] = dates.resample("MS").min()
+    out["last_day"] = dates.resample("MS").max()
+    out["month"] = out.index
+    out.index = pd.DatetimeIndex(out.last_day.fillna(out["month"] + pd.offsets.MonthEnd()), name="quote_day")
+    return out
+
+
+def seasonal(data):
+    """Align calendar month/day on a leap year; February 29 keeps its own position."""
+    out = data.copy()
+    out["quote_day"] = out.index
+    out["year"] = out.index.year
+    out["season_day"] = pd.to_datetime("2000-" + out.index.strftime("%m-%d"))
+    return out

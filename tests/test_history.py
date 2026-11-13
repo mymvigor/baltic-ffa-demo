@@ -1,0 +1,35 @@
+import gzip
+from contextlib import contextmanager
+from datetime import date
+
+import pandas as pd
+
+import ffa.history as history
+from test_analysis import quotes
+
+
+def test_archive_year_cache_is_reused_without_changing_date_filters(monkeypatch):
+    rows = quotes(pd.to_datetime(["2026-01-05", "2026-02-02"]), [10, 30], kind="Spot")
+    compressed = gzip.compress(rows.to_csv(index=False, date_format="%Y-%m-%d").encode())
+    calls = []
+
+    class Storage:
+        def read_file(self, path, revision):
+            calls.append((path, revision))
+            return compressed
+
+    @contextmanager
+    def connect(repo, token):
+        yield Storage()
+
+    monkeypatch.setattr(history, "connect", connect)
+    history.read_history_year.clear()
+    january = history.read_history("test/repo", "synthetic-id", "revision-a", (2026,), date(2026, 1, 1), date(2026, 1, 31), "synthetic")
+    assert january.price.tolist() == [10]
+    january.loc[:, "price"] = 999
+    february = history.read_history("test/repo", "synthetic-id", "revision-a", (2026,), date(2026, 2, 1), date(2026, 2, 28), "synthetic")
+    assert february.price.tolist() == [30]
+    assert calls == [("history/2026.csv.gz", "revision-a")]
+    history.read_history("test/repo", "synthetic-id", "revision-b", (2026,), date(2026, 2, 1), date(2026, 2, 28), "synthetic")
+    assert len(calls) == 2
+    history.read_history_year.clear()

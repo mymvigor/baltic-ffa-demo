@@ -5,6 +5,7 @@ import streamlit as st
 
 from .analytics import compare, delivery_label, indicators, timeline, unit_label
 from .preferences import choice, multi, toggle
+from .spot import monthly_overlay
 from .ui import COLORS, VALUE_HOVER, average_history, bollinger_history, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
 
 
@@ -74,7 +75,8 @@ def spot_comparison(local, days, bounds, key):
                  format_func=lambda leg: series_name(leg, local))
     unit = leg[3:5]
     spot = next((item for item in local if item[2] == "Spot" and item[3:5] == unit), None)
-    show_spot = toggle("Show Spot", key + "_show_spot", container=right) if spot else False
+    show_spot = toggle("Show Spot", key + "_show_spot", default=True, container=right) if spot else False
+    show_monthly = toggle("Spot monthly mean", key + "_spot_monthly", default=True) if spot else False
     show_basis = False
     measure = "Price difference"
     if show_spot:
@@ -102,6 +104,9 @@ def spot_comparison(local, days, bounds, key):
             average_groups["Prices"].append(("Spot", spot_data, "price"))
             average_groups["Basis"] = [("BFA − Spot", result, "price")]
             average_units["Basis"] = unit_label(*unit)
+    if show_monthly:
+        monthly_overlay(price_fig, local[spot][1], bounds)
+        st.caption("Spot monthly mean uses stored daily assessments, plotted on the last observed day of each month. The latest month is month-to-date; missing months stay empty.")
     show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.",
          unified=show_spot)
     if show_basis:
@@ -318,26 +323,9 @@ def historical_context(local, days, basis, calendar, bounds, key):
     st.caption("Historical context")
     spot = next((leg for leg in local if leg[2] == "Spot"), None)
     front = rolling_leg(local, "+1MON", spot[3:5]) if spot else None
-    if spot:
-        with st.expander("Spot seasonality"):
-            visible = local[spot][1]
-            visible = visible[visible.quote_day.between(*bounds)].copy()
-            monthly = visible.groupby(visible.quote_day.dt.to_period("M")).price.agg(["mean", "count"])
-            monthly = monthly[monthly["count"].ge(10)]
-            if monthly.index.year.nunique() < 2:
-                st.info("Select at least two years with spot history. Monthly averages require 10 or more assessments.")
-            else:
-                fig = chart(unit_label(*spot[3:5]), height=290)
-                for year, values in monthly.groupby(monthly.index.year):
-                    averages = values.set_axis(values.index.month)["mean"].reindex(range(1, 13))
-                    fig.add_scatter(x=averages.index, y=averages, mode="lines", connectgaps=False, name=str(year),
-                                    text=pd.to_datetime(averages.index, format="%m").strftime("%b"),
-                                    hovertemplate="<b>%{fullData.name}</b><br>%{text}<br><b>%{y:,.3~f}</b><extra></extra>")
-                fig.update_xaxes(title="Calendar month", dtick=1, range=[.5, 12.5])
-                display(fig, key + "_seasonality")
-
     if front:
-        with st.expander("Spot and M+1 correlation"):
+        with st.container():
+            st.markdown("**Spot and M+1 correlation**")
             spot_return, front_return = (indicators(prepared(local[leg][1], days)).change for leg in (spot, front))
             correlation = spot_return.rolling(20, min_periods=20).corr(front_return).clip(-1, 1).loc[bounds[0]:bounds[1]]
             if correlation.notna().any():
@@ -351,7 +339,8 @@ def historical_context(local, days, basis, calendar, bounds, key):
             else:
                 st.info("Correlation needs 20 consecutive matched changes with variation in both series.")
 
-    with st.expander("Rolling percentiles and volatility"):
+    with st.container():
+        st.markdown("**Rolling percentiles and volatility**")
         studies = {**basis, **calendar}
         if not studies:
             st.info("Select a spot basis or calendar spread first.")

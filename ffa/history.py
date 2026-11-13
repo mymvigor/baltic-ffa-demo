@@ -27,28 +27,33 @@ def read_manifest(repo, credential_id, _token):
     return ARCHIVE_REVISION, manifest
 
 
-@st.cache_data(ttl=300, max_entries=12, show_spinner=False)
-def read_history(repo, credential_id, revision, years, start, end, _token):
-    first, last = start.isoformat(), end.isoformat()
+@st.cache_data(max_entries=12, show_spinner=False)
+def read_history_year(repo, credential_id, revision, year, _token):
+    # Archive revisions are immutable. Reuse the parsed year across date windows.
     with connect(repo, _token) as storage:
-        rows = []
-        for year in years:
-            raw = storage.read_file(f"{ARCHIVE_PATH}/{year}.csv.gz", revision)
-            if raw is None:
-                raise RuntimeError("Historical data file is missing")
-            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
-                for row in csv.DictReader(io.TextIOWrapper(compressed, encoding="utf-8")):
-                    if not first <= row["quote_day"] <= last:
-                        continue
-                    parts = [row[key] for key in IDENTITY]
-                    if row["kind"] == "BFA":
-                        parts.extend([row["delivery_start"], row["delivery_end"]])
-                    row["identity"] = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
-                    row["series"] = None
-                    row["source"] = "history"
-                    row["mapping"] = "Baltic historical export"
-                    rows.append(row)
+        raw = storage.read_file(f"{ARCHIVE_PATH}/{year}.csv.gz", revision)
+    if raw is None:
+        raise RuntimeError("Historical data file is missing")
+    rows = []
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+        for row in csv.DictReader(io.TextIOWrapper(compressed, encoding="utf-8")):
+            parts = [row[key] for key in IDENTITY]
+            if row["kind"] == "BFA":
+                parts.extend([row["delivery_start"], row["delivery_end"]])
+            row["identity"] = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+            row["series"] = None
+            row["source"] = "history"
+            row["mapping"] = "Baltic historical export"
+            rows.append(row)
     return frame(rows)
+
+
+def read_history(repo, credential_id, revision, years, start, end, _token):
+    batches = []
+    for year in years:
+        data = read_history_year(repo, credential_id, revision, year, _token)
+        batches.append(data[data.quote_day.between(pd.Timestamp(start), pd.Timestamp(end))])
+    return pd.concat(batches, ignore_index=True) if batches else frame([])
 
 
 def merge_history(fixed, rolling, history):

@@ -50,6 +50,12 @@ def restore_preferences():
     st.rerun()
 
 
+def persist_preferences(key):
+    """Persist changes after a fragment rerun without rerunning the whole app."""
+    _browser_memory(data=st.session_state.get("_ffa_preferences", {}), key="ffa_memory_" + key,
+                    default={"saved": None}, on_saved_change=lambda: None, height=0)
+
+
 def _remember(key, default, decode, render):
     memory = st.session_state.setdefault("_ffa_preferences", {})
     short = hashlib.blake2s(key.encode(), digest_size=6).hexdigest()

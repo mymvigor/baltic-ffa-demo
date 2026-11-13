@@ -67,20 +67,17 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
 
     color = COLORS[index % len(COLORS)]
     pattern = dash or DASHES[index % len(DASHES)]
-    bridge_x, bridge_y = [], []
     if level:
-        # Only actual observations become vertices. Dashed links distinguish roll changes and long gaps.
-        split = observed.segment.ne(observed.segment.shift()) | observed.index.to_series().diff().gt(pd.Timedelta(days=7))
-        for position, boundary in enumerate(split):
-            if position and boundary:
-                bridge_x.extend([*observed.index[position - 1:position + 1], None])
-                bridge_y.extend([*observed[column].iloc[position - 1:position + 1], None])
-        groups = observed.groupby(split.cumsum(), sort=False)
+        # Contract changes and missing quotes are actual breaks, never dotted links.
+        split = data.segment.ne(data.segment.shift()) | data.index.to_series().diff().gt(pd.Timedelta(days=7))
+        groups = data.groupby(split.cumsum(), sort=False)
     else:
         groups = data.groupby("segment", sort=False)
 
     x, y, metadata = [], [], []
     for _, part in groups:
+        if not part[column].notna().any():
+            continue
         x.extend([*part.index, None])
         y.extend([*part[column], None])
         if custom:
@@ -88,17 +85,31 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
 
     # A single observation cannot form a line. Keep the value visible in that case.
     fig.add_scatter(
-        x=x, y=y, name=name, mode="lines" if len(observed) > 1 else "markers", connectgaps=False,
-        line=dict(color=color, width=2.35, dash=pattern), marker=dict(size=6, color=color),
+        x=x, y=y, name=name, mode="lines+markers", connectgaps=False,
+        line=dict(color=color, width=2.35, dash=pattern), marker=dict(size=2.5 if len(observed) > 1 else 6, color=color),
         legendgroup=name, customdata=metadata if custom else None,
         hovertemplate="<b>%{fullData.name}</b><br>" + hover + "<extra></extra>",
     )
-    if bridge_x:
-        fig.add_scatter(
-            x=bridge_x, y=bridge_y, mode="lines", name=name, legendgroup=name,
-            line=dict(color=color, width=1.6, dash="dot"), opacity=.65,
-            hoverinfo="skip", showlegend=False, connectgaps=False,
-        )
+    if level and column == "price":
+        mark_rolls(fig, data, column, name, index)
+
+
+def mark_rolls(fig, data, column="price", name="Series", index=0, seasonal_axis=False):
+    if "roll_from" not in data:
+        return
+    rolls = data[data.roll_from.notna() & data[column].notna()]
+    if rolls.empty:
+        return
+    dates = rolls["quote_day"] if seasonal_axis else rolls.index
+    labels = [f"{day:%Y-%m-%d}" for day in dates]
+    fig.add_scatter(
+        x=rolls.index, y=rolls[column], name=f"{name} · Roll", legendgroup=name, showlegend=False,
+        mode="markers+text" if len(rolls) <= 6 else "markers", text=labels, textposition="top center",
+        textfont=dict(size=10, color="#516478"),
+        marker=dict(size=8, symbol="diamond-open", color=COLORS[index % len(COLORS)]),
+        customdata=list(zip(labels, rolls.roll_from, rolls.roll_to)),
+        hovertemplate="<b>Contract roll · %{customdata[0]}</b><br>%{customdata[1]}<br>%{customdata[2]}<extra></extra>",
+    )
 
 
 def rolling_leg(local, suffix, unit=None):
@@ -113,7 +124,8 @@ def average_history(groups, bounds, unit, key):
     groups = {name: sources for name, sources in groups.items() if sources}
     if not groups:
         return
-    with st.expander("Period averages"):
+    with st.container():
+        st.markdown("**Period averages**")
         left, right = st.columns(2)
         frequency = choice(
             "Average by", ["Weekly", "Monthly", "Quarterly", "Yearly"],
@@ -156,7 +168,8 @@ def bollinger_history(groups, bounds, unit, key):
     groups = {name: sources for name, sources in groups.items() if sources}
     if not groups:
         return
-    with st.expander("Bollinger bands"):
+    with st.container():
+        st.markdown("**Bollinger bands**")
         left, right = st.columns(2)
         view = choice("Measure", groups, key + "_bb_view", container=left) if len(groups) > 1 else next(iter(groups))
         sources = groups[view]
@@ -336,6 +349,21 @@ def curves(data, market, tenor, targets, key):
             trace += 1
     if fig.data:
         display(fig, key + "_curve_chart")
+        latest_day = max(selected)
+        current = base[base.quote_day.eq(latest_day) & base.delivery_start.between(*delivery)].sort_values("delivery_start")
+        if len(current) >= 2:
+            near, far = current.iloc[0], current.iloc[-1]
+            delta = far.price - near.price
+            for title, value, container in zip(
+                (f"Near · {delivery_label(tenor, near.delivery_start)}", f"Far · {delivery_label(tenor, far.delivery_start)}", "Far − Near"),
+                (near.price, far.price, delta), st.columns(3),
+            ):
+                container.metric(title, f"{value:,.2f}")
+            st.caption(f"{latest_day:%d %b %Y} · {unit_label(*unit)}. Endpoint slope; intermediate deliveries follow the curve.")
+            detail = snapshots(base, [latest_day])[latest_day].loc[delivery[0]:delivery[1]]
+            table = pd.DataFrame({"Assessment": detail.price, "Adjacent delivery spread": detail.price.diff()})
+            table.index = [delivery_label(tenor, expiry) for expiry in table.index]
+            st.dataframe(table, width="stretch")
     else:
         st.info("No prices in the selected delivery range.")
 
