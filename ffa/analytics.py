@@ -90,6 +90,20 @@ def indicators(data):
     return out
 
 
+def percentiles(data, window=20):
+    """Preserve the existing consecutive-row percentile window within each roll."""
+    result = data.copy()
+    rolling = result.groupby("segment").price.rolling(window, min_periods=window)
+    for field, probability in (("p10", .1), ("median", .5), ("p90", .9)):
+        result[field] = rolling.quantile(probability).droplevel(0)
+    return result
+
+
+def change_volatility(data, window=20):
+    changes = data.groupby("segment").price.diff()
+    return changes.groupby(data.segment).rolling(window, min_periods=window).std(ddof=1).droplevel(0).reindex(data.index)
+
+
 def period_means(data, column, frequency, bounds):
     visible = data.loc[bounds[0]:bounds[1]].dropna(subset=[column])
     rows = []

@@ -1,4 +1,5 @@
 import hashlib
+import html
 import logging
 import time
 from datetime import timedelta
@@ -8,14 +9,15 @@ import streamlit as st
 
 from ffa.analytics import frame, options
 from ffa.demo import data as demo_data
-from ffa.history import merge_history, read_history, read_manifest
+from ffa.history import read_history, read_manifest
 from ffa.model import VESSELS
 from ffa.preferences import calendar, choice, multi, persist_preferences, restore_preferences
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.research import calendar_spreads, comparison_studies, comparison_workspace, historical_context, spot_comparison
-from ffa.ui import TENORS, curve_changes, curves, prices, section
+from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
+from ffa.workspace import MarketWorkspace
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -38,10 +40,10 @@ STYLE = """
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
 [data-testid="stMetricValue"] {font-size:clamp(1rem,2.1vw,1.8rem);}
 .ffa-hero {background: linear-gradient(112deg,#101c30,#17354a); border:1px solid #263e53;
-    border-radius: 16px; color: #f6fbff; padding: clamp(20px, 4vw, 46px); margin-bottom: .65rem;
+    border-radius: 16px; color: #f6fbff; padding: 18px 26px; margin-bottom: .65rem;
     box-shadow: 0 8px 20px rgba(15, 34, 54, .12);}
 .ffa-kicker {color:#a8d2d6; font:600 .73rem monospace; text-transform:uppercase; letter-spacing:.16em;}
-.ffa-title {font-size:clamp(2rem, 4vw, 3.6rem); font-weight:730; letter-spacing:-.045em; line-height:1.15; margin:.35rem 0 .55rem;}
+.ffa-title {font-size:clamp(1.7rem, 2.7vw, 2.2rem); font-weight:730; letter-spacing:-.035em; line-height:1.15; margin:.25rem 0 .35rem; padding:0 !important;}
 .ffa-meta {color:#d1e0ec; font-size:.91rem;}
 .ffa-section {padding-top:1.15rem; border-top: 1px solid #dce5ed; margin-top:.4rem;}
 .ffa-section h2 {font-size:1.55rem; letter-spacing:-.025em; margin:0; padding:.1rem 0 .25rem;}
@@ -54,15 +56,15 @@ STYLE = """
 @st.cache_data(ttl=120, show_spinner=False)
 def read_live(repo, credential_id, _token):
     with connect(repo, _token) as storage:
-        data, _ = storage.load()
+        data, revision = storage.load()
         fixed, rolling, status = market(data)
-        return frame(fixed), frame(rolling), status
+        return frame(fixed), frame(rolling), status, revision
 
 
 @st.cache_data(max_entries=2, show_spinner=False)
 def read_demo():
     fixed, rolling, status = demo_data()
-    return frame(fixed), frame(rolling), status
+    return frame(fixed), frame(rolling), status, "demo-v1"
 
 
 def default_product(data, vessel):
@@ -157,6 +159,8 @@ def main():
         st.markdown("### Baltic FFA")
         st.caption("DRY FREIGHT RESEARCH")
         vessel = choice("Vessel class", VESSELS, "vessel", "PMX", control="radio", format_func=VESSELS.get)
+        benchmark_area = st.container()
+        navigation_area = st.container()
         if live:
             dispatch_token = st.secrets.get("github_actions_token")
             if dispatch_token:
@@ -166,21 +170,25 @@ def main():
                 st.caption("Baltic sync is not configured for this app.")
 
     archive = {}
+    repo = credential_id = token = revision = data_revision = None
     fallback = False
     if live:
         try:
             token = st.secrets["github_reader_token"]
             repo = st.secrets["github_repo"]
             credential_id = hashlib.sha256(token.encode()).hexdigest()
-            fixed, rolling, status = read_live(repo, credential_id, token)
-            st.session_state["_last_feed"] = fixed, rolling, status
+            feed = read_live(repo, credential_id, token)
+            fixed, rolling, status = feed[:3]
+            data_revision = feed[3] if len(feed) > 3 else None
+            st.session_state["_last_feed"] = feed
         except Exception as exc:
             logging.warning("FFA live feed unavailable: %s", type(exc).__name__)
             saved = st.session_state.get("_last_feed")
             if saved is None:
                 st.error("Market data is temporarily unavailable.")
                 return
-            fixed, rolling, status = saved
+            fixed, rolling, status = saved[:3]
+            data_revision = saved[3] if len(saved) > 3 else None
             fallback = True
         try:
             revision, archive = read_manifest(repo, credential_id, token)
@@ -188,7 +196,7 @@ def main():
             logging.warning("FFA archive index unavailable: %s", type(exc).__name__)
             st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
     else:
-        fixed, rolling, status = read_demo()
+        fixed, rolling, status, data_revision = read_demo()
     show_status(status, vessel, live, fallback)
 
     if not isinstance(fixed, pd.DataFrame):
@@ -205,102 +213,99 @@ def main():
         if pd.notna(last):
             st.sidebar.caption(f"{kind} · {last:%d %b %Y}")
     source = "Baltic Exchange assessments" if live else "Synthetic demonstration data"
+    products = sorted(market_data["product"].unique())
+    preferred = default_product(market_data, vessel)
+    product = choice("Benchmark", products, f"{vessel}_benchmark", preferred, container=benchmark_area)
+    navigation_area.markdown("[Spot](#spot-analysis)  \n[Price Explorer](#price-explorer)  \n"
+                        "[Term Structure](#term-structure)  \n[Market Relationships](#market-relationships)  \n[Seasonality](#seasonality)")
     st.markdown(
         f'<div class="ffa-hero"><div class="ffa-kicker">Market monitor / Dry bulk</div>'
-        f'<h1 class="ffa-title">{VESSELS[vessel]}</h1>'
+        f'<h1 class="ffa-title">{VESSELS[vessel]} · {html.escape(product)}</h1>'
         f'<div class="ffa-meta">{source} &nbsp;·&nbsp; Latest class quote {quote_day:%d %b %Y}</div></div>',
         unsafe_allow_html=True,
     )
-    products = sorted(market_data["product"].unique())
-    preferred = default_product(market_data, vessel)
     history_starts = archive.get("first_dates", {}).get(vessel, {})
     global_first = min(fixed.quote_day.min().date(),
                        *(pd.Timestamp(value).date() for value in history_starts.values())) if history_starts else fixed.quote_day.min().date()
+    observed_days = market_data.loc[market_data["product"].eq(product), "quote_day"]
+    first = min(observed_days.min().date(), pd.Timestamp(history_starts.get(product, observed_days.min())).date())
+    last = observed_days.max().date()
+    stamp = (repo, credential_id, data_revision, revision)
+    workspace = st.session_state.get("_market_workspace")
+    if not isinstance(workspace, MarketWorkspace) or workspace.revision != stamp or data_revision is None:
+        workspace = MarketWorkspace(fixed, rolling, stamp, revision, max_views=12)
+        st.session_state["_market_workspace"] = workspace
 
-    def product_choice(key, container=st):
-        return choice("Benchmark", products, key + "_product", preferred, container=container)
-
-    def dates(product):
-        days = market_data.loc[market_data["product"].eq(product), "quote_day"]
-        first, last = days.min().date(), days.max().date()
-        return min(first, pd.Timestamp(history_starts.get(product, first)).date()), last
-
-    def tenor_choice(product, key):
+    def tenor_choice(key):
         present = market_data[market_data["product"].eq(product) & market_data.kind.eq("BFA")].tenor
         available = [tenor for tenor in TENORS if tenor in set(present)]
         return choice("Delivery", available, key, control="radio", horizontal=True,
                       format_func=TENORS.get) if available else None
 
-    def latest_forward(product, tenor):
+    def latest_forward(tenor):
         observed = market_data[market_data["product"].eq(product) & market_data.kind.eq("BFA") & market_data.tenor.eq(tenor)]
-        return observed.quote_day.max().date() if not observed.empty else dates(product)[1]
+        return observed.quote_day.max().date() if not observed.empty else last
 
-    def load_window(start, end):
+    def load_window(start, end, scope_vessel, scope_product):
         if not archive:
-            return fixed, rolling
-        # Include the full warm-up year, not just 20 calendar days.
+            return frame([])
         warmup = (start - timedelta(days=60)).replace(month=1, day=1)
         years = tuple(year for year in archive["years"] if warmup.year <= int(year) <= end.year)
         if not years:
-            return fixed, rolling
+            return frame([])
         try:
-            history = read_history(repo, credential_id, revision, years, warmup, end, token)
-            return merge_history(fixed, rolling, history)
+            return read_history(repo, credential_id, revision, years, warmup, end, token,
+                                vessel=scope_vessel, product=scope_product)
         except Exception:
             st.warning("Historical assessments are temporarily unavailable. Showing the latest feed.")
-            return fixed, rolling
+            missing = frame([])
+            missing.attrs["history_unavailable"] = True
+            return missing
 
-    def inputs(product, start, end):
-        complete, rolls = load_window(start, end)
-        current = complete[complete.vessel.eq(vessel) & complete["product"].eq(product)]
-        relative = rolls[rolls.vessel.eq(vessel) & rolls["product"].eq(product)]
-        days = pd.DatetimeIndex(sorted(current.quote_day.unique()))
-        return options(current, relative), days, current, complete, rolls
+    def inputs(start, end, *, wide=False, seasonal=False):
+        return workspace.view(vessel, product, start, end, load_window, wide=wide, seasonal=seasonal)
 
     @st.fragment
     def spot_panel():
-        section(1, "Spot Analysis", "Spot Bollinger bands and separate MA5 / MA20 histories.")
-        key = f"{vessel}_spot"
-        product = product_choice(key)
-        key += "_" + product
-        bounds = assessment_window(*dates(product), key)
+        section(1, "Spot Analysis", "Trend and trading range: two complementary views of the same Spot benchmark.")
+        key = f"{vessel}_spot_{product}"
+        bounds = assessment_window(first, last, key)
         if bounds[0] <= bounds[1]:
-            local, days, *_ = inputs(product, *bounds)
-            spot_analysis(local, days, tuple(pd.Timestamp(day) for day in bounds), key)
+            view = inputs(*bounds)
+            spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
         else:
             st.info("Choose a start date before the end date.")
         persist_preferences(key)
 
     @st.fragment
     def price_panel():
-        section(2, "Price Explorer", "Follow the benchmark, compare contracts, or build a two-leg spread.")
-        key = f"{vessel}_price"
-        product = product_choice(key)
-        key += "_" + product
+        section(2, "Price Explorer", "The single workspace for fixed and rolling price histories, multi-series comparisons and spreads.")
+        key = f"{vessel}_price_{product}"
         mode = choice("Analysis", ["Spot + BFA", "Multi-series", "Spread / Ratio"], key + "_view",
                       control="segmented_control", label_visibility="collapsed")
-        bounds = assessment_window(*dates(product), key + mode)
+        bounds = assessment_window(first, last, key + mode)
         if bounds[0] > bounds[1]:
             st.info("Choose a start date before the end date.")
         else:
-            local, days, _, complete, rolls = inputs(product, *bounds)
+            view = inputs(*bounds)
             timestamps = tuple(pd.Timestamp(day) for day in bounds)
             if mode == "Spot + BFA":
-                spot_comparison(local, days, timestamps, key)
+                spot_comparison(view.local, view.days, timestamps, key)
             else:
-                basis, calendar_studies = comparison_studies(local, days)
-                comparison_workspace(options(complete, rolls), local, basis, calendar_studies,
+                basis, calendar_studies = comparison_studies(view.local, view.days)
+                def universe():
+                    complete = inputs(*bounds, wide=True)
+                    return options(complete.fixed, complete.rolling)
+                comparison_workspace(universe, view.local, basis, calendar_studies,
                                      timestamps, key + mode, mode == "Spread / Ratio")
         persist_preferences(key)
 
     @st.fragment
     def curve_panel():
-        section(3, "Forward Curve", "Compare assessments by delivery period.")
-        key = f"{vessel}_curve"
-        product = product_choice(key)
-        key += "_" + product
-        tenor = tenor_choice(product, key + "_tenor")
-        latest = latest_forward(product, tenor)
+        st.markdown("**Forward curve · delivery snapshot**")
+        key = f"{vessel}_curve_{product}"
+        tenor = tenor_choice(key + "_tenor")
+        latest = latest_forward(tenor)
         offset = choice("Snapshots", ["7D", "30D", "Custom"], key + "_snapshots", control="segmented_control")
         targets = [latest, latest - timedelta(days=7 if offset == "7D" else 30)]
         if offset == "Custom":
@@ -309,18 +314,17 @@ def main():
                 targets = [calendar(f"Assessment {i + 1}", key + f"_date_{i}",
                                     max(global_first, latest - timedelta(days=7 * i)), global_first, latest)
                            for i in range(count)]
-        _, _, current, complete, _ = inputs(product, min(targets), max(targets))
-        curves(current, complete, tenor, [pd.Timestamp(day) for day in targets], key)
+        view = inputs(min(targets), max(targets), wide=True)
+        current = view.fixed[view.fixed.vessel.eq(vessel) & view.fixed["product"].eq(product)]
+        curves(current, view.fixed, tenor, [pd.Timestamp(day) for day in targets], key)
         persist_preferences(key)
 
     @st.fragment
     def changes_panel():
-        section(4, "Curve Changes", "Compare the same fixed deliveries across assessment dates.")
-        key = f"{vessel}_changes"
-        product = product_choice(key)
-        key += "_" + product
-        tenor = tenor_choice(product, key + "_tenor")
-        latest = latest_forward(product, tenor)
+        st.markdown("**Curve changes · matched deliveries**")
+        key = f"{vessel}_changes_{product}"
+        tenor = tenor_choice(key + "_tenor")
+        latest = latest_forward(tenor)
         mode = choice("Analysis", ["Repricing", "Heatmap"], key + "_view", control="segmented_control",
                       label_visibility="collapsed")
         targets, lookback = [latest, latest - timedelta(days=7)], 20
@@ -333,55 +337,51 @@ def main():
                 if custom == "Custom":
                     targets = [calendar("To", key + "_to", latest, global_first, latest),
                                calendar("From", key + "_from", max(global_first, targets[1]), global_first, latest)]
-        _, _, current, *_ = inputs(product, min(*targets, latest - timedelta(days=lookback * 2 + 20)), max(targets))
-        curve_changes(current, tenor, mode, [pd.Timestamp(day) for day in targets], lookback, key)
+        view = inputs(min(*targets, latest - timedelta(days=lookback * 2 + 20)), max(targets))
+        curve_changes(view.fixed, tenor, mode, [pd.Timestamp(day) for day in targets], lookback, key)
         persist_preferences(key)
 
     @st.fragment
-    def term_panel():
-        section(5, "Term Structure", "Fixed deliveries, rolling histories, calendar spreads and historical context.")
-        key = f"{vessel}_term"
-        product = product_choice(key)
-        key += "_" + product
-        mode = choice("Series", ["Fixed", "Rolling"], key + "_mode", control="segmented_control")
-        bounds = assessment_window(*dates(product), key + mode)
+    def calendar_panel():
+        key = f"{vessel}_term_{product}"
+        bounds = assessment_window(first, last, key + "Rolling")
         if bounds[0] > bounds[1]:
             st.info("Choose a start date before the end date.")
         else:
-            local, days, *_ = inputs(product, *bounds)
+            view = inputs(*bounds)
             timestamps = tuple(pd.Timestamp(day) for day in bounds)
-            if mode == "Rolling":
-                st.caption("Unadjusted prices. Lines break at contract rolls; diamonds mark the roll date. MA5 / MA20 and Bollinger bands restart for each delivery contract.")
-            prices(local, days, timestamps, key, mode)
-            calendar_studies = calendar_spreads({leg: value for leg, value in local.items() if leg[6] == mode},
-                                               days, timestamps, key + mode)
-            basis, _ = comparison_studies(local, days)
-            historical_context(local, days, basis, calendar_studies, timestamps, key)
+            st.caption("Rolling prices are unadjusted. Lines break at rolls; diamonds show the roll date. "
+                       "Daily MA5 / MA20 and bands restart within each confirmed delivery contract.")
+            studies = calendar_spreads(view.local, view.days, timestamps, key)
+            basis, _ = comparison_studies(view.local, view.days)
+            section(4, "Market Relationships", "Correlation and change volatility add context without repeating the price charts above.")
+            historical_context(view.local, view.days, basis, studies, timestamps, key)
         persist_preferences(key)
 
     @st.fragment
     def seasonal_panel():
-        section(6, "Seasonality", "Compare Spot or the same rolling tenor across calendar years. Fixed deliveries stay in Term Structure.")
-        key = f"{vessel}_seasonal"
-        product = product_choice(key)
-        key += "_" + product
-        latest = dates(product)[1]
-        available = sorted({int(year) for year in archive.get("years", []) if int(year) <= latest.year}
-                           | set(market_data.loc[market_data["product"].eq(product), "quote_day"].dt.year), reverse=True)
+        section(5, "Seasonality", "Compare the same Spot benchmark or rolling tenor across calendar years.")
+        key = f"{vessel}_seasonal_{product}"
+        available = sorted({int(year) for year in archive.get("years", []) if int(year) <= last.year}
+                           | set(observed_days.dt.year), reverse=True)
         years = multi("Compare years", available, key + "_years", available[:5], len(available))
         if years:
-            start, end = pd.Timestamp(min(years), 1, 1).date(), min(pd.Timestamp(max(years), 12, 31).date(), latest)
-            local, days, *_ = inputs(product, start, end)
-            seasonality(local, days, years, key)
+            start, end = pd.Timestamp(min(years), 1, 1).date(), min(pd.Timestamp(max(years), 12, 31).date(), last)
+            view = inputs(start, end, seasonal=True)
+            seasonality(view.local, view.days, years, key)
         else:
             st.info("Select at least one year.")
         persist_preferences(key)
 
     spot_panel()
     price_panel()
-    curve_panel()
-    changes_panel()
-    term_panel()
+    section(3, "Term Structure", "The forward curve, repricing and calendar spread explain the shape across deliveries.")
+    curve_column, changes_column = st.columns(2)
+    with curve_column:
+        curve_panel()
+    with changes_column:
+        changes_panel()
+    calendar_panel()
     seasonal_panel()
 
 

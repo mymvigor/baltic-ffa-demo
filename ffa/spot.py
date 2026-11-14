@@ -3,7 +3,7 @@ import pandas as pd
 import streamlit as st
 
 from .analytics import indicators, monthly_spot, seasonal, timeline, unit_label
-from .preferences import choice
+from .preferences import choice, toggle
 from .ui import COLORS, VALUE_HOVER, bollinger_history, chart, date_axis, display, draw_segments, mark_rolls, series_name
 
 
@@ -38,14 +38,22 @@ def spot_analysis(local, days, bounds, key):
     unit = unit_label(*leg[3:5])
     st.caption(f"{unit} · Latest visible Spot assessment {visible.index[-1]:%d %b %Y}. "
                "Moving averages count valid quotation days; missing quotes are not filled.")
-    bollinger_history({"Spot": [("Spot", data, "price")]}, bounds, unit, key + "_standalone")
-    for field, title in (("ma5", "MA5 · 5 valid assessments"), ("ma20", "MA20 · 20 valid assessments")):
-        st.markdown(f"**Spot / {title}**")
+    trend, bands = st.columns(2)
+    with trend:
+        st.markdown("**Trend · Spot, MA5 and MA20**")
+        with st.popover("Trend settings"):
+            show_ma5 = toggle("MA5", key + "_trend_ma5", default=True)
+            show_ma20 = toggle("MA20", key + "_trend_ma20", default=True)
+        st.caption("5- and 20-day means, using valid quotes.")
         fig = chart(unit, height=285)
-        for column, name, index in (("price", "Spot", 0), (field, field.upper(), 1)):
+        for column, name, index in (("price", "Spot", 0), ("ma5", "MA5", 1), ("ma20", "MA20", 2)):
+            if column == "ma5" and not show_ma5 or column == "ma20" and not show_ma20:
+                continue
             draw_segments(fig, data.loc[bounds[0]:bounds[1]], column, name, index, VALUE_HOVER)
         date_axis(fig, bounds)
-        display(fig, key + "_" + field)
+        display(fig, key + "_trend")
+    with bands:
+        bollinger_history({"Spot": [("Spot", data, "price")]}, bounds, unit, key + "_standalone", compact=True)
 
 
 def seasonality(local, days, years, key):
@@ -78,7 +86,9 @@ def seasonality(local, days, years, key):
         if actual.empty:
             continue
         part = aligned[aligned.year.eq(year)].set_index("season_day")
-        draw_segments(fig, part, "price", str(year), index, "%{customdata[0]}<br><b>%{y:,.3~f}</b>", ["Assessment"])
+        coverage_text = f"{actual.quote_day.min():%d %b %Y} – {actual.quote_day.max():%d %b %Y} · {len(actual)} assessments"
+        draw_segments(fig, part, "price", str(year), index, "%{customdata[0]}<br><b>%{y:,.3~f}</b><br>%{meta[0]}",
+                      ["Assessment"], meta=[coverage_text])
         if leg[6] == "Rolling":
             mark_rolls(fig, part, name=str(year), index=index, seasonal_axis=True)
         coverage.append({"Year": year, "First assessment": f"{actual.quote_day.min():%d %b %Y}",
@@ -92,6 +102,7 @@ def seasonality(local, days, years, key):
     st.caption("Observed prices only. Partial years are not extrapolated; coverage does not certify a complete trading calendar. "
                "February 29 keeps its own calendar position. " +
                ("Rolling prices are unadjusted, with breaks and dated diamonds at contract rolls." if leg[6] == "Rolling" else
-                "Monthly means use stored daily assessments; the latest month is month-to-date."))
+                "Monthly means use stored daily assessments; the latest month is month-to-date." if frequency == "Monthly mean" else ""))
     if coverage:
-        st.dataframe(pd.DataFrame(coverage), hide_index=True, width="stretch")
+        newest = coverage[0]
+        st.caption(f"{newest['Year']} through {newest['Last assessment']}. Exact yearly coverage and sample counts are shown on hover.")

@@ -1,4 +1,3 @@
-import csv
 import gzip
 import io
 import json
@@ -34,24 +33,34 @@ def read_history_year(repo, credential_id, revision, year, _token):
         raw = storage.read_file(f"{ARCHIVE_PATH}/{year}.csv.gz", revision)
     if raw is None:
         raise RuntimeError("Historical data file is missing")
-    rows = []
-    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
-        for row in csv.DictReader(io.TextIOWrapper(compressed, encoding="utf-8")):
-            parts = [row[key] for key in IDENTITY]
-            if row["kind"] == "BFA":
-                parts.extend([row["delivery_start"], row["delivery_end"]])
-            row["identity"] = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
-            row["series"] = None
-            row["source"] = "history"
-            row["mapping"] = "Baltic historical export"
-            rows.append(row)
+    rows = pd.read_csv(io.BytesIO(raw), compression="gzip", dtype=str, keep_default_na=False)
+    fields = [*IDENTITY, "delivery_start", "delivery_end"]
+    codes, unique = pd.factorize(pd.MultiIndex.from_frame(rows[fields]), sort=False)
+    identities = []
+    for values in unique:
+        parts = list(values[:len(IDENTITY)])
+        if values[2] == "BFA":
+            parts.extend(values[len(IDENTITY):])
+        identities.append(json.dumps(parts, ensure_ascii=False, separators=(",", ":")))
+    rows["identity"] = pd.Series(identities).take(codes).to_numpy()
+    rows["series"], rows["source"], rows["mapping"] = None, "history", "Baltic historical export"
     return frame(rows)
 
 
-def read_history(repo, credential_id, revision, years, start, end, _token):
+@st.cache_data(max_entries=32, show_spinner=False)
+def read_history_scope(repo, credential_id, revision, year, vessel, product, _token):
+    data = read_history_year(repo, credential_id, revision, year, _token)
+    if vessel is not None:
+        data = data[data.vessel.eq(vessel)]
+    if product is not None:
+        data = data[data["product"].eq(product)]
+    return data
+
+
+def read_history(repo, credential_id, revision, years, start, end, _token, vessel=None, product=None):
     batches = []
     for year in years:
-        data = read_history_year(repo, credential_id, revision, year, _token)
+        data = read_history_scope(repo, credential_id, revision, year, vessel, product, _token)
         batches.append(data[data.quote_day.between(pd.Timestamp(start), pd.Timestamp(end))])
     return pd.concat(batches, ignore_index=True) if batches else frame([])
 

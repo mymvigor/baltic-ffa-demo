@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from .analytics import delivery_label, indicators, period_means, snapshots, timeline, unit_label
+from .analytics import delivery_label, indicators, percentiles, period_means, snapshots, timeline, unit_label
 from .model import VESSELS
 from .preferences import choice, multi, toggle
 
@@ -15,8 +15,9 @@ VALUE_HOVER = "%{x|%d %b %Y}<br><b>%{y:,.3~f}</b>"
 
 
 def section(number, title, description):
+    anchor = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     st.markdown(
-        f'<div class="ffa-section"><h2><span class="ffa-number">{number:02d}</span>{title}</h2>'
+        f'<div class="ffa-section" id="{anchor}"><h2><span class="ffa-number">{number:02d}</span>{title}</h2>'
         f'<p>{description}</p></div>', unsafe_allow_html=True,
     )
 
@@ -60,7 +61,7 @@ def series_name(key, series, full=False):
     return name
 
 
-def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None, level=False):
+def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None, level=False, meta=None):
     observed = data[data[column].notna()]
     if observed.empty:
         return
@@ -87,7 +88,7 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
     fig.add_scatter(
         x=x, y=y, name=name, mode="lines+markers", connectgaps=False,
         line=dict(color=color, width=2.35, dash=pattern), marker=dict(size=2.5 if len(observed) > 1 else 6, color=color),
-        legendgroup=name, customdata=metadata if custom else None,
+        legendgroup=name, customdata=metadata if custom else None, meta=meta,
         hovertemplate="<b>%{fullData.name}</b><br>" + hover + "<extra></extra>",
     )
     if level and column == "price":
@@ -118,6 +119,55 @@ def rolling_leg(local, suffix, unit=None):
         and re.search(re.escape(suffix) + r"(?:#\d+)?$", key[-1])
         and (unit is None or key[3:5] == unit)
     ), None)
+
+
+FREQUENCIES = {"Daily": None, "Weekly": "W-SUN", "Monthly": "M", "Quarterly": "Q-DEC", "Yearly": "Y-DEC"}
+
+
+def history_settings(key):
+    left, right = st.columns([1, 2])
+    frequency = choice("Frequency", FREQUENCIES, key + "_frequency", "Daily", container=left)
+    overlays = multi("Indicators", ["MA5", "MA20", "Bollinger bands", "20D percentiles"],
+                     key + "_indicators", [], 4, container=right) if frequency == "Daily" else []
+    if frequency != "Daily":
+        right.caption("Available assessments are averaged within each delivery contract. Daily mode provides MA and band overlays.")
+    return frequency, overlays
+
+
+def draw_history_view(fig, data, column, name, index, bounds, frequency="Daily", overlays=()):
+    """Render one chart at the selected frequency, with optional on-chart statistics."""
+    if frequency != "Daily":
+        rule = FREQUENCIES[frequency]
+        means = period_means(data, column, rule, bounds)
+        if means.empty:
+            return
+        means = means.set_index("date")
+        ordinal = pd.Series(means.index.to_period(rule).asi8, index=means.index)
+        gaps = ordinal.groupby(means.segment).diff().gt(1)
+        means["segment"] = (means.segment.ne(means.segment.shift()) | gaps).cumsum()
+        means["Details"] = [f"{row.period}<br>{row.samples} assessments<br>Observed {row.observed}"
+                            + (f"<br>{row.clipped}" if row.clipped else "")
+                            + (f"<br>{row.contract}" if row.contract else "") for row in means.itertuples()]
+        draw_segments(fig, means, "price", name, index, "%{customdata[0]}<br><b>%{y:,.3~f}</b>", ["Details"])
+        return
+    view = data.loc[bounds[0]:bounds[1]]
+    custom = ["Delivery"] if "Delivery" in data and column == "price" else None
+    hover = VALUE_HOVER + ("<br>Delivery %{customdata[0]}" if custom else "")
+    draw_segments(fig, view, column, name, index, hover, custom, level=column == "price")
+    if not overlays:
+        return
+    values = data if column == "price" else data.assign(price=data[column])
+    if any(item in overlays for item in ("MA5", "MA20", "Bollinger bands")):
+        statistics = indicators(values).loc[bounds[0]:bounds[1]]
+        for option, fields in {"MA5": [("ma5", "MA5", "dash")], "MA20": [("ma20", "MA20", "longdash")],
+                               "Bollinger bands": [("upper", "Upper band", "dot"), ("lower", "Lower band", "dot")]}.items():
+            if option in overlays:
+                for field, label, dash in fields:
+                    draw_segments(fig, statistics, field, f"{name} · {label}", index, VALUE_HOVER, dash=dash)
+    if "20D percentiles" in overlays:
+        statistics = percentiles(values).loc[bounds[0]:bounds[1]]
+        for field, label, dash in (("p10", "10th percentile", "dot"), ("median", "Median", "dash"), ("p90", "90th percentile", "dot")):
+            draw_segments(fig, statistics, field, f"{name} · {label}", index, VALUE_HOVER, dash=dash)
 
 
 def average_history(groups, bounds, unit, key):
@@ -164,30 +214,32 @@ def average_history(groups, bounds, unit, key):
         display(fig, key + "_averages_chart")
 
 
-def bollinger_history(groups, bounds, unit, key):
+def bollinger_history(groups, bounds, unit, key, compact=False):
     groups = {name: sources for name, sources in groups.items() if sources}
     if not groups:
         return
     with st.container():
         st.markdown("**Bollinger bands**")
-        left, right = st.columns(2)
-        view = choice("Measure", groups, key + "_bb_view", container=left) if len(groups) > 1 else next(iter(groups))
+        view = choice("Measure", groups, key + "_bb_view") if len(groups) > 1 else next(iter(groups))
         sources = groups[view]
         names = [source[0] for source in sources]
-        selected = choice("Series", names, key + "_bb_series", container=right) if len(names) > 1 else names[0]
-        controls = st.columns(5)
-        show_series = toggle("Series line", key + "_bb_show_series", default=True, container=controls[0])
-        show_mean = toggle("20-day MA", key + "_bb_show_mean", default=True, container=controls[1])
-        show_upper = toggle("Upper band", key + "_bb_show_upper", default=True, container=controls[2])
-        show_lower = toggle("Lower band", key + "_bb_show_lower", default=True, container=controls[3])
-        show_shading = toggle("Shading", key + "_bb_show_shading", default=False, container=controls[4])
+        selected = choice("Series", names, key + "_bb_series") if len(names) > 1 else names[0]
+        with st.popover("Band settings") if compact else st.container():
+            controls = st.columns(2 if compact else 5)
+            show_series = toggle("Series line", key + "_bb_show_series", default=True, container=controls[0])
+            show_mean = toggle("20-day MA", key + "_bb_show_mean", default=True, container=controls[1])
+            show_upper = toggle("Upper band", key + "_bb_show_upper", default=True, container=controls[0 if compact else 2])
+            show_lower = toggle("Lower band", key + "_bb_show_lower", default=True, container=controls[1 if compact else 3])
+            show_shading = toggle("Shading", key + "_bb_show_shading", default=False, container=controls[0 if compact else 4])
         if not any((show_series, show_mean, show_upper, show_lower, show_shading)):
             st.info("Select a line or shading to display.")
             return
         name, source, column = next(item for item in sources if item[0] == selected)
         data = source.copy()
         data["price"] = data[column]
-        data = indicators(data).loc[bounds[0]:bounds[1]]
+        if not {"ma20", "upper", "lower"}.issubset(data.columns) or column != "price":
+            data = indicators(data)
+        data = data.loc[bounds[0]:bounds[1]]
         valid = data.upper.notna() & data.lower.notna()
         if not valid.any() and any((show_mean, show_upper, show_lower, show_shading)):
             st.info("Bollinger bands need 20 valid assessments within the same contract segment.")
@@ -199,6 +251,8 @@ def bollinger_history(groups, bounds, unit, key):
             for column, label, enabled in (("lower", "Lower band", show_lower), ("upper", "Upper band", show_upper)):
                 if not enabled and not show_shading:
                     continue
+                if compact:
+                    label = "Lower" if column == "lower" else "Upper"
                 fig.add_scatter(
                     x=run.index, y=run[column], mode="lines", name=label, legendgroup=label,
                     showlegend=index == 0 and enabled,
@@ -211,10 +265,12 @@ def bollinger_history(groups, bounds, unit, key):
         if show_series:
             draw_segments(fig, data, "price", name, 0, VALUE_HOVER)
         if show_mean:
-            draw_segments(fig, data, "ma20", "20-day MA", 1, VALUE_HOVER, dash="dash")
+            draw_segments(fig, data, "ma20", "MA20" if compact else "20-day MA",
+                          2 if compact else 1, VALUE_HOVER, dash="dot" if compact else "dash")
         if not fig.data:
             return
-        st.caption("20-assessment mean ± 2 standard deviations (population). "
+        st.caption("20-day mean ± 2σ (population)." if compact else
+                   "20-assessment mean ± 2 standard deviations (population). "
                    "Valid quotation days only; calculations restart at each contract roll.")
         date_axis(fig, bounds)
         display(fig, key + "_bollinger_chart")
@@ -354,16 +410,9 @@ def curves(data, market, tenor, targets, key):
         if len(current) >= 2:
             near, far = current.iloc[0], current.iloc[-1]
             delta = far.price - near.price
-            for title, value, container in zip(
-                (f"Near · {delivery_label(tenor, near.delivery_start)}", f"Far · {delivery_label(tenor, far.delivery_start)}", "Far − Near"),
-                (near.price, far.price, delta), st.columns(3),
-            ):
-                container.metric(title, f"{value:,.2f}")
-            st.caption(f"{latest_day:%d %b %Y} · {unit_label(*unit)}. Endpoint slope; intermediate deliveries follow the curve.")
-            detail = snapshots(base, [latest_day])[latest_day].loc[delivery[0]:delivery[1]]
-            table = pd.DataFrame({"Assessment": detail.price, "Adjacent delivery spread": detail.price.diff()})
-            table.index = [delivery_label(tenor, expiry) for expiry in table.index]
-            st.dataframe(table, width="stretch")
+            st.caption(f"{latest_day:%d %b %Y} · {unit_label(*unit)} · "
+                       f"Near {delivery_label(tenor, near.delivery_start)}: {near.price:,.2f} · "
+                       f"Far {delivery_label(tenor, far.delivery_start)}: {far.price:,.2f} · Far − Near: {delta:,.2f}.")
     else:
         st.info("No prices in the selected delivery range.")
 

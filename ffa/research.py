@@ -3,10 +3,10 @@ import re
 import pandas as pd
 import streamlit as st
 
-from .analytics import compare, delivery_label, indicators, timeline, unit_label
+from .analytics import change_volatility, compare, delivery_label, indicators, timeline, unit_label
 from .preferences import choice, multi, toggle
 from .spot import monthly_overlay
-from .ui import COLORS, VALUE_HOVER, average_history, bollinger_history, chart, date_axis, display, draw_segments, rolling_leg, section, series_name
+from .ui import COLORS, VALUE_HOVER, chart, date_axis, display, draw_history_view, draw_segments, history_settings, rolling_leg, section, series_name
 
 
 def prepared(rows, days):
@@ -65,18 +65,24 @@ def same_day_hover(fig, forward, spot, forward_name):
 
 
 def spot_comparison(local, days, bounds, key):
-    choices = [leg for leg in local if leg[2] == "BFA"]
+    modes = [mode for mode in ("Rolling", "Fixed") if any(leg[2] == "BFA" and leg[6] == mode for leg in local)]
+    if not modes:
+        st.info("No BFA series available.")
+        return {}
+    mode = choice("Contract history", modes, key + "_basis_mode", "Rolling", control="segmented_control")
+    choices = [leg for leg in local if leg[2] == "BFA" and leg[6] == mode]
     if not choices:
         st.info("No BFA series available.")
         return {}
-    default = rolling_leg(local, "+1MON") or choices[0]
+    default = (rolling_leg(local, "+1MON") if mode == "Rolling" else None) or choices[0]
     left, right = st.columns([2, 1], vertical_alignment="bottom")
     leg = choice("BFA contract", choices, key + "_basis_leg", default, container=left,
                  format_func=lambda leg: series_name(leg, local))
     unit = leg[3:5]
     spot = next((item for item in local if item[2] == "Spot" and item[3:5] == unit), None)
     show_spot = toggle("Show Spot", key + "_show_spot", default=True, container=right) if spot else False
-    show_monthly = toggle("Spot monthly mean", key + "_spot_monthly", default=True) if spot else False
+    frequency, overlays = history_settings(key + "_prices")
+    show_monthly = toggle("Spot monthly mean", key + "_spot_monthly", default=True) if spot and frequency != "Monthly" else False
     show_basis = False
     measure = "Price difference"
     if show_spot:
@@ -90,37 +96,30 @@ def spot_comparison(local, days, bounds, key):
     name = series_name(leg, local)
     forward_name = "BFA · " + name
     price_fig = chart(unit_label(*unit))
-    draw_history(price_fig, forward.loc[window], "price", forward_name, 0)
-    average_groups = {"Prices": [(forward_name, forward, "price")]}
-    average_units = {"Prices": unit_label(*unit)}
+    draw_history_view(price_fig, forward, "price", forward_name, 0, bounds, frequency, overlays)
     basis = {}
     if spot:
         spot_data = prepared(local[spot][1], days)
         result = paired(forward, spot_data)
         basis[f"{name} − Spot"] = (unit, result)
         if show_spot:
-            draw_history(price_fig, spot_data.loc[window], "price", "Spot", 1)
-            same_day_hover(price_fig, forward.loc[window], spot_data.loc[window], forward_name)
-            average_groups["Prices"].append(("Spot", spot_data, "price"))
-            average_groups["Basis"] = [("BFA − Spot", result, "price")]
-            average_units["Basis"] = unit_label(*unit)
+            draw_history_view(price_fig, spot_data, "price", "Spot", 1, bounds, frequency, overlays)
+            if frequency == "Daily" and not overlays:
+                same_day_hover(price_fig, forward.loc[window], spot_data.loc[window], forward_name)
     if show_monthly:
         monthly_overlay(price_fig, local[spot][1], bounds)
         st.caption("Spot monthly mean uses stored daily assessments, plotted on the last observed day of each month. The latest month is month-to-date; missing months stay empty.")
     show(price_fig, bounds, key + "_spot_overlay", "No spot or forward quotes in the selected range.",
          unified=show_spot)
     if show_basis:
+        st.markdown("**Basis · selected BFA − Spot**")
+        basis_frequency, basis_overlays = history_settings(key + "_basis_chart")
         basis_fig = chart("% of spot" if measure == "Percent" else unit_label(*unit), height=235)
         percent = result.copy()
         percent["percent"] = 100 * percent.price / percent.b.where(percent.b.gt(0))
-        view = percent.loc[window]
-        show_pair(basis_fig, view, "percent" if measure == "Percent" else "price", "BFA − Spot", 0)
+        draw_history_view(basis_fig, percent, "percent" if measure == "Percent" else "price", "BFA − Spot", 0,
+                          bounds, basis_frequency, basis_overlays)
         show(basis_fig, bounds, key + "_spot_basis", "No same-day spot and BFA quotes in this range.")
-        if measure == "Percent":
-            average_groups["Basis"] = [("BFA − Spot (%)", percent, "percent")]
-            average_units["Basis"] = "% of spot"
-    bollinger_history(average_groups, bounds, average_units, key + "_spot")
-    average_history(average_groups, bounds, average_units, key + "_spot")
     return basis
 
 
@@ -167,11 +166,10 @@ def calendar_spreads(local, days, bounds, key):
     result = paired(a, b)
     result["price"] = result.price.where(ordered)
     name = f"{series_name(near, local)} − {series_name(far, local)}"
+    frequency, overlays = history_settings(key + "_calendar")
     fig = chart(unit_label(*unit), height=315)
-    show_pair(fig, result.loc[bounds[0]:bounds[1]], "price", name, 0)
+    draw_history_view(fig, result, "price", name, 0, bounds, frequency, overlays)
     show(fig, bounds, key + "_calendar_chart", "No same-day quotes with confirmed near-before-far delivery in this range.")
-    bollinger_history({"Spread": [(name, result, "price")]}, bounds, unit_label(*unit), key + "_calendar")
-    average_history({"Spread": [(name, result, "price")]}, bounds, unit_label(*unit), key + "_calendar")
     return {name: (unit, result)}
 
 
@@ -207,7 +205,8 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
     if method == "Overlay":
         with st.popover("Series options"):
             metric = choice("Measure", metrics, key + "_compare_metric")
-    available = local if universe == "Current benchmark" else series
+    available = local if universe == "Current benchmark" else series() if callable(series) else series
+    series = available
     derived = {} if method == "Rebased to 100" or metric != "Price or level" else {**basis, **calendar}
     if not available:
         st.info("No comparison series are available.")
@@ -260,7 +259,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
                  for day in rows.quote_day}
             ))
     window = slice(*bounds)
-    average_sources = []
+    frequency, overlays = history_settings(key + "_workspace")
     if pair:
         a, b = selected
         align = not isinstance(a, str) and not isinstance(b, str) and a[0] != b[0] and a[2] == b[2] == "BFA"
@@ -279,16 +278,14 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
         history = paired(*panels, divide=method == "Ratio", align=align)
         result = history.loc[window]
         fig = chart("Ratio" if method == "Ratio" else unit_label(*unit))
-        show_pair(fig, result, "price", f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", 0)
-        average_sources.append((f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", history, "price"))
-        average_unit = "Ratio" if method == "Ratio" else unit_label(*unit)
+        draw_history_view(fig, history, "price", f"{name(a)} {'÷' if method == 'Ratio' else '−'} {name(b)}", 0,
+                          bounds, frequency, overlays)
         if align:
             st.caption("Cross-vessel BFA legs are matched by date and actual delivery period.")
     else:
         column = metrics[metric]
         label = "Index (100 = base)" if method == "Rebased to 100" else "%" if column == "change" else unit_label(*unit)
         fig = chart(label)
-        average_unit = label
         raw = {item: prepared(available[item][1], dates[item]) for item in selected if not isinstance(item, str)}
         base_day = None
         if method == "Rebased to 100":
@@ -301,8 +298,7 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
             st.caption(f"Base date · {base_day:%d %b %Y}")
         for index, item in enumerate(selected):
             if isinstance(item, str):
-                show_pair(fig, derived[item][1].loc[window], "price", name(item), index)
-                average_sources.append((name(item), derived[item][1], "price"))
+                draw_history_view(fig, derived[item][1], "price", name(item), index, bounds, frequency, overlays)
                 continue
             data = raw[item]
             values = indicators(data).copy() if column != "price" else data.copy()
@@ -311,59 +307,48 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
             if base_day is not None:
                 values = values.loc[base_day:].copy()
                 values[column] = 100 * values[column] / data.loc[base_day, "price"]
-            draw_history(fig, values.loc[window], column, name(item), index)
-            average_sources.append((name(item), values, column))
+            draw_history_view(fig, values, column, name(item), index, bounds, frequency, overlays)
 
     show(fig, bounds, key + "_workspace", "No matched prices or sufficient history for the selected view.")
-    bollinger_history({"Selected series": average_sources}, bounds, average_unit, key + "_workspace")
-    average_history({"Selected series": average_sources}, bounds, average_unit, key + "_workspace")
 
 
 def historical_context(local, days, basis, calendar, bounds, key):
-    st.caption("Historical context")
+    correlation_panel, risk_panel = st.columns(2)
     spot = next((leg for leg in local if leg[2] == "Spot"), None)
     front = rolling_leg(local, "+1MON", spot[3:5]) if spot else None
-    if front:
-        with st.container():
-            st.markdown("**Spot and M+1 correlation**")
+    with correlation_panel:
+        st.markdown("**Spot / M+1 · return correlation**")
+        if front:
             spot_return, front_return = (indicators(prepared(local[leg][1], days)).change for leg in (spot, front))
             correlation = spot_return.rolling(20, min_periods=20).corr(front_return).clip(-1, 1).loc[bounds[0]:bounds[1]]
             if correlation.notna().any():
-                fig = chart("Correlation", height=260)
+                fig = chart("Correlation", height=280)
                 fig.add_scatter(x=correlation.index, y=correlation, mode="lines", connectgaps=False,
                                 name="20-assessment correlation",
-                                hovertemplate="<b>%{fullData.name}</b><br>%{x|%d %b %Y}<br><b>%{y:.2f}</b><extra></extra>")
+                                hovertemplate="%{x|%d %b %Y}<br><b>%{y:.2f}</b><extra></extra>")
                 fig.update_yaxes(range=[-1, 1])
                 date_axis(fig, bounds)
                 display(fig, key + "_correlation")
             else:
                 st.info("Correlation needs 20 consecutive matched changes with variation in both series.")
-
-    with st.container():
-        st.markdown("**Rolling percentiles and volatility**")
+        else:
+            st.info("Matching Spot and M+1 assessments are needed for correlation.")
+    with risk_panel:
+        st.markdown("**Spread / basis · change volatility**")
         studies = {**basis, **calendar}
         if not studies:
-            st.info("Select a spot basis or calendar spread first.")
+            st.info("No matching basis or calendar spread is available.")
             return
-        name = choice("Study", studies, key + "_historical_study")
+        name = choice("Volatility study", studies, key + "_historical_study")
         unit, data = studies[name]
-        data = data.copy()
-        samples = data.groupby("segment").price
-        for column, probability in [("Lower", .10), ("Median", .50), ("Upper", .90)]:
-            data[column] = samples.transform(lambda values: values.rolling(20, min_periods=20).quantile(probability))
-        data["Volatility"] = samples.transform(lambda values: values.diff().rolling(20, min_periods=20).std())
+        data = data.assign(volatility=change_volatility(data))
         visible = data.loc[bounds[0]:bounds[1]]
-        if not visible.Median.notna().any():
-            st.info("Percentiles need 20 consecutive matched observations in a roll segment.")
+        if not visible.volatility.notna().any():
+            st.info("Volatility needs 20 consecutive changes in the same contract segment.")
             return
-        fig = chart(unit_label(*unit), height=300)
-        for index, (column, label) in enumerate([("price", name), ("Median", "Median"), ("Lower", "10th percentile"),
-                                                 ("Upper", "90th percentile")]):
-            draw_segments(fig, visible, column, label, index, VALUE_HOVER)
+        fig = chart(unit_label(*unit), height=280)
+        draw_segments(fig, visible, "volatility", "20-assessment change volatility", 0, VALUE_HOVER)
         date_axis(fig, bounds)
-        display(fig, key + "_percentiles")
-        if visible.Volatility.notna().any():
-            vol = chart(unit_label(*unit), height=260)
-            draw_segments(vol, visible, "Volatility", "20-assessment change volatility", 0, VALUE_HOVER)
-            date_axis(vol, bounds)
-            display(vol, key + "_volatility")
+        display(fig, key + "_volatility")
+    st.caption("Correlation uses same-day returns. Volatility uses within-contract changes. "
+               "Missing assessments and contract rolls remain gaps; percentile ranges are available as overlays on price and spread charts.")
