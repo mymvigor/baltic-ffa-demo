@@ -34,8 +34,8 @@ STYLE = """
 @media (min-width: 768px) {
     [data-testid="stSidebar"][aria-expanded="true"] { width: 216px !important; min-width: 216px !important; }
 }
-[data-testid="stPlotlyChart"] {background:#fff; border:1px solid #dfe7ef; border-radius:13px;
-    padding:.35rem .5rem; box-shadow:0 2px 10px rgba(19, 41, 65, .04);}
+[data-testid="stPlotlyChart"] {background:#fff; border:0; border-radius:13px;
+    padding:0; box-shadow:0 0 0 1px #dfe7ef, 0 2px 10px rgba(19, 41, 65, .04);}
 [data-testid="stSidebarContent"] {border-right: 1px solid #e2e9ef;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
 [data-testid="stMetricValue"] {font-size:clamp(1rem,2.1vw,1.8rem);}
