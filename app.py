@@ -45,7 +45,7 @@ STYLE = """
 .ffa-kicker {color:#a8d2d6; font:600 .73rem monospace; text-transform:uppercase; letter-spacing:.16em;}
 .ffa-title {font-size:clamp(1.7rem, 2.7vw, 2.2rem); font-weight:730; letter-spacing:-.035em; line-height:1.15; margin:.25rem 0 .35rem; padding:0 !important;}
 .ffa-meta {color:#d1e0ec; font-size:.91rem;}
-.ffa-section {padding-top:1.15rem; border-top: 1px solid #dce5ed; margin-top:.4rem;}
+.ffa-section {padding-top:1.15rem; border-top: 1px solid #dce5ed; margin-top:.4rem; scroll-margin-top:4rem;}
 .ffa-section h2 {font-size:1.55rem; letter-spacing:-.025em; margin:0; padding:.1rem 0 .25rem;}
 .ffa-section p {font-size:.89rem; color:#4f6478; margin:0 0 .2rem;}
 .ffa-number {font:600 .73rem monospace; color:#216d72; letter-spacing:.1em; margin-right:.7rem;}
