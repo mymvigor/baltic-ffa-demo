@@ -3,7 +3,7 @@ from statistics import mean, stdev
 import pandas as pd
 import pytest
 
-from ffa.analytics import change_volatility, compare, percentiles, period_means, timeline
+from ffa.analytics import change_volatility, compare, percentiles, period_means, return_correlation, timeline
 from ffa.ui import chart, draw_history_view
 from test_analysis import quotes
 
@@ -55,3 +55,21 @@ def test_percentile_and_volatility_definitions_survive_chart_consolidation():
     vol = change_volatility(data, window=5)
     assert vol.loc[days[5]] == pytest.approx(stdev([1, 3, 5, 7, 9]))
     assert vol.loc[days[7]:].isna().all()
+
+
+def test_relationship_windows_restart_at_rolls_and_do_not_fill_missing_quotes():
+    days = pd.bdate_range("2026-08-03", periods=44)
+    spot = timeline(quotes(days, [100 + i ** 2 for i in range(44)], kind="Spot"), days)
+    forward = timeline(pd.concat([
+        quotes(days[:22], [200 + i ** 3 for i in range(22)]),
+        quotes(days[22:], [1000 + i ** 3 for i in range(22)], start="2026-11-01", end="2026-11-30"),
+    ]), days)
+    short = return_correlation(spot, forward, window=10)
+    long = return_correlation(spot, forward, window=20)
+    assert short.notna().sum() == 24
+    assert long.notna().sum() == 4
+    assert short.iloc[22:32].isna().all()
+    expected = spot.price.iloc[:11].pct_change().corr(forward.price.iloc[:11].pct_change())
+    assert short.iloc[10] == pytest.approx(expected)
+    forward.loc[days[35], "price"] = float("nan")
+    assert return_correlation(spot, forward, window=10).iloc[35:].isna().all()

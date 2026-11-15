@@ -104,6 +104,14 @@ def change_volatility(data, window=20):
     return changes.groupby(data.segment).rolling(window, min_periods=window).std(ddof=1).droplevel(0).reindex(data.index)
 
 
+def return_correlation(spot, forward, window=20):
+    # A roll or missing quotation creates a missing return, invalidating every
+    # window that includes it. Never bridge contracts or fill missing returns.
+    spot_return = indicators(spot).change
+    forward_return = indicators(forward).change
+    return spot_return.rolling(window, min_periods=window).corr(forward_return).clip(-1, 1)
+
+
 def period_means(data, column, frequency, bounds):
     visible = data.loc[bounds[0]:bounds[1]].dropna(subset=[column])
     rows = []

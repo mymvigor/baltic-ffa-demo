@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from .analytics import change_volatility, compare, delivery_label, indicators, timeline, unit_label
+from .analytics import change_volatility, compare, delivery_label, indicators, return_correlation, timeline, unit_label
 from .preferences import choice, multi, toggle
 from .spot import monthly_overlay
 from .ui import COLORS, VALUE_HOVER, chart, date_axis, display, draw_history_view, draw_segments, history_settings, rolling_leg, section, series_name
@@ -313,27 +313,31 @@ def comparison_workspace(series, local, basis, calendar, bounds, key, pair_mode)
 
 
 def historical_context(local, days, basis, calendar, bounds, key):
-    correlation_panel, risk_panel = st.columns(2)
+    window = choice("Statistics window", [5, 10, 20], key + "_statistics_window", 10,
+                    control="segmented_control", format_func=lambda value: f"{value} changes")
+    st.caption(f"{window} consecutive changes require at least {window + 1} matched assessments in one contract. "
+               "Monthly rolls restart the window, so gaps are expected; 20-change windows often show only month-end points.")
     spot = next((leg for leg in local if leg[2] == "Spot"), None)
     front = rolling_leg(local, "+1MON", spot[3:5]) if spot else None
-    with correlation_panel:
+    with st.container():
         st.markdown("**Spot / M+1 · return correlation**")
         if front:
-            spot_return, front_return = (indicators(prepared(local[leg][1], days)).change for leg in (spot, front))
-            correlation = spot_return.rolling(20, min_periods=20).corr(front_return).clip(-1, 1).loc[bounds[0]:bounds[1]]
+            correlation = return_correlation(*(prepared(local[leg][1], days) for leg in (spot, front)),
+                                             window=window).loc[bounds[0]:bounds[1]]
             if correlation.notna().any():
-                fig = chart("Correlation", height=280)
-                fig.add_scatter(x=correlation.index, y=correlation, mode="lines", connectgaps=False,
-                                name="20-assessment correlation",
+                fig = chart("Correlation", height=340)
+                fig.add_scatter(x=correlation.index, y=correlation, mode="lines+markers", marker_size=4, connectgaps=False,
+                                name=f"{window}-change correlation",
                                 hovertemplate="%{x|%d %b %Y}<br><b>%{y:.2f}</b><extra></extra>")
                 fig.update_yaxes(range=[-1, 1])
                 date_axis(fig, bounds)
                 display(fig, key + "_correlation")
+                st.caption(f"{int(correlation.notna().sum())} valid correlation points in the selected dates. Gaps are not zero correlation.")
             else:
-                st.info("Correlation needs 20 consecutive matched changes with variation in both series.")
+                st.info(f"Correlation needs {window} consecutive matched changes with variation in both series. Try a shorter statistics window.")
         else:
             st.info("Matching Spot and M+1 assessments are needed for correlation.")
-    with risk_panel:
+    with st.container():
         st.markdown("**Spread / basis · change volatility**")
         studies = {**basis, **calendar}
         if not studies:
@@ -341,14 +345,16 @@ def historical_context(local, days, basis, calendar, bounds, key):
             return
         name = choice("Volatility study", studies, key + "_historical_study")
         unit, data = studies[name]
-        data = data.assign(volatility=change_volatility(data))
+        data = data.assign(volatility=change_volatility(data, window=window))
         visible = data.loc[bounds[0]:bounds[1]]
         if not visible.volatility.notna().any():
-            st.info("Volatility needs 20 consecutive changes in the same contract segment.")
+            st.info(f"Volatility needs {window} consecutive changes in the same contract segment. Try a shorter statistics window.")
             return
-        fig = chart(unit_label(*unit), height=280)
-        draw_segments(fig, visible, "volatility", "20-assessment change volatility", 0, VALUE_HOVER)
+        fig = chart(unit_label(*unit), height=340)
+        draw_segments(fig, visible, "volatility", f"{window}-change volatility", 0, VALUE_HOVER)
         date_axis(fig, bounds)
         display(fig, key + "_volatility")
+        st.caption(f"{int(visible.volatility.notna().sum())} valid volatility points in the selected dates. "
+                   "Sample standard deviation of daily spread changes; not annualized.")
     st.caption("Correlation uses same-day returns. Volatility uses within-contract changes. "
                "Missing assessments and contract rolls remain gaps; percentile ranges are available as overlays on price and spread charts.")

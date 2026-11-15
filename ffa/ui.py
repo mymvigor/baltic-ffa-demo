@@ -244,7 +244,7 @@ def bollinger_history(groups, bounds, unit, key, compact=False):
         if not valid.any() and any((show_mean, show_upper, show_lower, show_shading)):
             st.info("Bollinger bands need 20 valid assessments within the same contract segment.")
         measure_unit = unit[view] if isinstance(unit, dict) else unit
-        fig = chart(measure_unit, height=285)
+        fig = chart(measure_unit, height=380)
         # Shade each continuous run separately so fills cannot bridge rolls or missing quotes.
         breaks = data.segment.ne(data.segment.shift()) | ~valid | ~valid.shift(fill_value=False)
         for index, (_, run) in enumerate(data[valid].groupby(breaks[valid].cumsum())):

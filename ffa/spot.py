@@ -38,22 +38,20 @@ def spot_analysis(local, days, bounds, key):
     unit = unit_label(*leg[3:5])
     st.caption(f"{unit} · Latest visible Spot assessment {visible.index[-1]:%d %b %Y}. "
                "Moving averages count valid quotation days; missing quotes are not filled.")
-    trend, bands = st.columns(2)
-    with trend:
+    with st.container():
         st.markdown("**Trend · Spot, MA5 and MA20**")
         with st.popover("Trend settings"):
             show_ma5 = toggle("MA5", key + "_trend_ma5", default=True)
             show_ma20 = toggle("MA20", key + "_trend_ma20", default=True)
         st.caption("5- and 20-day means, using valid quotes.")
-        fig = chart(unit, height=285)
+        fig = chart(unit, height=380)
         for column, name, index in (("price", "Spot", 0), ("ma5", "MA5", 1), ("ma20", "MA20", 2)):
             if column == "ma5" and not show_ma5 or column == "ma20" and not show_ma20:
                 continue
             draw_segments(fig, data.loc[bounds[0]:bounds[1]], column, name, index, VALUE_HOVER)
         date_axis(fig, bounds)
         display(fig, key + "_trend")
-    with bands:
-        bollinger_history({"Spot": [("Spot", data, "price")]}, bounds, unit, key + "_standalone", compact=True)
+    bollinger_history({"Spot": [("Spot", data, "price")]}, bounds, unit, key + "_standalone", compact=True)
 
 
 def seasonality(local, days, years, key):

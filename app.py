@@ -376,11 +376,8 @@ def main():
     spot_panel()
     price_panel()
     section(3, "Term Structure", "The forward curve, repricing and calendar spread explain the shape across deliveries.")
-    curve_column, changes_column = st.columns(2)
-    with curve_column:
-        curve_panel()
-    with changes_column:
-        changes_panel()
+    curve_panel()
+    changes_panel()
     calendar_panel()
     seasonal_panel()
 

@@ -76,6 +76,22 @@ def test_frequency_and_indicators_reuse_the_existing_chart(app):
     assert not app.dataframe
 
 
+def test_relationship_window_updates_existing_charts(app):
+    before = len(app.get("plotly_chart"))
+    control = next(widget for widget in app.get("segmented_control") if widget.label == "Statistics window")
+    assert control.value == 10
+    control.set_value(5).run()
+    assert not app.exception
+    assert len(app.get("plotly_chart")) == before
+    names = [trace.get("name", "") for item in app.get("plotly_chart") for trace in json.loads(item.proto.spec)["data"]]
+    assert "5-change correlation" in names
+    assert "5-change volatility" in names
+    next(widget for widget in app.get("segmented_control") if widget.label == "Statistics window").set_value(20).run()
+    assert not app.exception
+    # The synthetic monthly contracts have too few changes for this window.
+    assert any("20 consecutive" in item.value for item in app.info)
+
+
 def test_all_benchmarks_and_rebased_mode_still_work(app):
     next(widget for widget in app.get("segmented_control") if widget.label == "Analysis").set_value("Multi-series").run()
     next(widget for widget in app.selectbox if widget.label == "Universe").set_value("All benchmarks").run()

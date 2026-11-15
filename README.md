@@ -4,13 +4,15 @@ Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic da
 
 The page has five clear sections, with one global benchmark selector and sidebar navigation:
 
-1. **Spot Analysis:** one Spot / MA5 / MA20 trend chart alongside Bollinger bands.
+1. **Spot Analysis:** one Spot / MA5 / MA20 trend chart, followed by Bollinger bands.
 2. **Price Explorer:** the sole home for fixed and rolling price histories, Spot comparisons, multi-series overlays, rebasing, spreads and ratios. Spot monthly mean remains a switch. Frequency and indicator controls update the existing chart instead of creating duplicate price, average and band charts.
-3. **Term Structure:** the forward-curve snapshot and matched-delivery repricing or heatmap appear together; calendar spreads follow below.
+3. **Term Structure:** the forward-curve snapshot, matched-delivery repricing or heatmap, and calendar spreads appear in sequence.
 4. **Market Relationships:** Spot / M+1 return correlation and within-contract change volatility add independent information. Percentile ranges are available directly on price and spread charts.
 5. **Seasonality:** multi-year Spot and rolling-tenor overlays.
 
-Charts remain expanded. There are no visible data tables; exact values and coverage remain on hover. The normal real-data view has 10 charts rather than the previous 19.
+Charts use the full content width, appear vertically in sequence and remain expanded. There are no visible data tables; exact values and coverage remain on hover. The normal real-data view has 10 charts rather than the previous 19.
+
+Market Relationships uses a selectable 5, 10 or 20 consecutive-change window (default 10). Each window stays within one contract; N changes require at least N+1 consecutive quotations, and correlation requires variation in both returns. Missing assessments and monthly rolls create genuine gaps. A 20-change window often yields only month-end points in monthly rolling contracts. The volatility chart is the sample standard deviation of daily absolute spread changes, in the quote unit, without annualization. These controls do not alter MA5, MA20 or Bollinger windows.
 
 Seasonality compares Spot or one rolling tenor across selected calendar years (latest five by default). Fixed contract histories remain in Price Explorer. Yearly coverage and sample counts are in each line's hover details, partial periods are not extrapolated, and February 29 keeps its calendar position. Spot monthly means use stored valid daily assessments and place each point on the last observed date of the month; the latest month is month-to-date and missing months remain gaps. General period averages use available selected-window assessments, split at delivery changes; daily spreads or ratios are calculated before averaging.
 
