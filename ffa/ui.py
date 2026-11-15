@@ -61,6 +61,10 @@ def series_name(key, series, full=False):
     return name
 
 
+def spot_series(data):
+    return "kind" in data and data.kind.eq("Spot").any() and data.kind.dropna().eq("Spot").all()
+
+
 def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None, level=False, meta=None):
     observed = data[data[column].notna()]
     if observed.empty:
@@ -68,7 +72,8 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
 
     color = COLORS[index % len(COLORS)]
     pattern = dash or DASHES[index % len(DASHES)]
-    if level:
+    connect_spot = spot_series(data)
+    if level and not connect_spot:
         # Contract changes and missing quotes are actual breaks, never dotted links.
         split = data.segment.ne(data.segment.shift()) | data.index.to_series().diff().gt(pd.Timedelta(days=7))
         groups = data.groupby(split.cumsum(), sort=False)
@@ -77,6 +82,9 @@ def draw_segments(fig, data, column, name, index, hover, custom=None, dash=None,
 
     x, y, metadata = [], [], []
     for _, part in groups:
+        if connect_spot:
+            # Join observed Spot points across closures without inventing quotes.
+            part = part.loc[part[column].notna()]
         if not part[column].notna().any():
             continue
         x.extend([*part.index, None])
@@ -245,9 +253,11 @@ def bollinger_history(groups, bounds, unit, key, compact=False):
             st.info("Bollinger bands need 20 valid assessments within the same contract segment.")
         measure_unit = unit[view] if isinstance(unit, dict) else unit
         fig = chart(measure_unit, height=380)
-        # Shade each continuous run separately so fills cannot bridge rolls or missing quotes.
-        breaks = data.segment.ne(data.segment.shift()) | ~valid | ~valid.shift(fill_value=False)
-        for index, (_, run) in enumerate(data[valid].groupby(breaks[valid].cumsum())):
+        # Spot joins observed bands across closures; contract rolls remain breaks.
+        breaks = data.segment.ne(data.segment.shift())
+        if not spot_series(data):
+            breaks |= ~valid | ~valid.shift(fill_value=False)
+        for index, (_, run) in enumerate(data[valid].groupby(breaks.cumsum()[valid])):
             for column, label, enabled in (("lower", "Lower band", show_lower), ("upper", "Upper band", show_upper)):
                 if not enabled and not show_shading:
                     continue

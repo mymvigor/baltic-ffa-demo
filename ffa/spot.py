@@ -37,7 +37,8 @@ def spot_analysis(local, days, bounds, key):
         container.metric(title, f"{last[column]:,.2f}" if pd.notna(last[column]) else "—")
     unit = unit_label(*leg[3:5])
     st.caption(f"{unit} · Latest visible Spot assessment {visible.index[-1]:%d %b %Y}. "
-               "Moving averages count valid quotation days; missing quotes are not filled.")
+               "Lines join observed Spot points across closures; missing quotes are not filled. "
+               "Moving averages count valid quotation days.")
     with st.container():
         st.markdown("**Trend · Spot, MA5 and MA20**")
         with st.popover("Trend settings"):

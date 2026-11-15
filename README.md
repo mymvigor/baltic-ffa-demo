@@ -18,6 +18,8 @@ Seasonality compares Spot or one rolling tenor across selected calendar years (l
 
 Rolling prices remain unadjusted. Lines break at a contract change, and dated diamonds identify rolls. MA5, MA20 and Bollinger bands use only valid quotations within the same confirmed delivery interval; windows restart after a roll and require the full 5 or 20 observations. Display-window changes do not discard the loaded warm-up history.
 
+Daily Spot price, MA and Bollinger lines join their observed points across holiday closures and missing quotes. This is a drawing rule only: no missing values are filled, and indicator calculations are unchanged. Rolling and derived contract series retain their gaps and roll breaks.
+
 Main panels refresh independently while retaining browser preferences. Archive identities are generated once per unique contract; immutable years and scoped subsets are cached by repository, credential identity and archive revision. Session views reuse merged data only while the exact live blob and archive revisions match. Same-day price revisions invalidate the workspace; transient archive failures are not cached as complete views. The live 120-second cache and market-data access are unchanged. Cross-benchmark history is loaded only for a curve comparison or an explicitly selected all-benchmark workspace.
 
 Run `python -m pytest -q` for synthetic calculation, history-cache and Streamlit interaction checks.
