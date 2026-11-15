@@ -80,9 +80,10 @@ def default_product(data, vessel):
     return data.sort_values("quote_day", ascending=False).iloc[0]["product"]
 
 
-def assessment_window(first, last, key):
-    periods = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "All": None, "Custom": None}
-    preset = choice("History", periods, key + "_window", "3M", control="segmented_control")
+def assessment_window(first, last, key, research=False):
+    periods = ({"1Y": 365, "3Y": 1095, "All": None, "Custom": None} if research else
+               {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "All": None, "Custom": None})
+    preset = choice("History", periods, key + "_window", "3Y" if research else "3M", control="segmented_control")
     if preset != "Custom":
         duration = periods[preset]
         return (max(first, last - timedelta(days=duration)) if duration else first, last)
@@ -284,21 +285,24 @@ def main():
         key = f"{vessel}_price_{product}"
         mode = choice("Analysis", ["Spot + BFA", "Multi-series", "Spread / Ratio"], key + "_view",
                       control="segmented_control", label_visibility="collapsed")
-        bounds = assessment_window(first, last, key + mode)
+        study = choice("Spot vs BFA view", VIEWS, key + "_study", "Price history",
+                       control="segmented_control") if mode == "Spot + BFA" else None
+        research = study in ("Lead / lag", "Forecast backtest")
+        bounds = assessment_window(first, last, key + mode + (study if research else ""), research=research)
         if bounds[0] > bounds[1]:
             st.info("Choose a start date before the end date.")
         else:
-            view = inputs(*bounds)
+            view = inputs(*bounds) if study in (None, "Price history") else None
             timestamps = tuple(pd.Timestamp(day) for day in bounds)
             if mode == "Spot + BFA":
-                study = choice("Spot vs BFA view", VIEWS, key + "_study", "Price history",
-                               control="segmented_control")
                 if study == "Price history":
                     spot_comparison(view.local, view.days, timestamps, key)
                 else:
-                    # Load the long training history only when research is selected.
-                    complete = inputs(first, last)
-                    predictive_view(complete.fixed, timestamps, key + "_predictive", study, stamp)
+                    # Warm up the selected test window without loading every old archive.
+                    training_start = max(first, bounds[0] - timedelta(days=730)) if research else bounds[0]
+                    complete = inputs(training_start, last)
+                    predictive_view(complete.fixed, timestamps, key + "_predictive", study,
+                                    (stamp, training_start, last))
             else:
                 basis, calendar_studies = comparison_studies(view.local, view.days)
                 def universe():

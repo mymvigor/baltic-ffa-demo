@@ -35,8 +35,8 @@ def data(mode="normal"):
                 end = period(tenor, start)[1] if start else None
                 value = round(base + (start.month * 200 + (start.year - 2026) * 400 if start else -700))
                 quote = Quote(quote_day, vessel, product, "BFA" if start else "Spot", "USD", "day",
-                              tenor, start, end, code, code, "合成示例", "api", Decimal(value))
-                row = dict(asdict(quote), identity=quote.identity, source="合成")
+                              tenor, start, end, code, code, "Synthetic example", "api", Decimal(value))
+                row = dict(asdict(quote), identity=quote.identity, source="Synthetic")
                 fixed.append(row)
                 if code:
                     rolling.append(row)

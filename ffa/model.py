@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 VESSELS = {"CAPE": "Capesize", "PMX": "Panamax", "SMX": "Supramax", "HDY": "Handysize"}
 DEMO_PRODUCTS = {"CAPE": "DEMO-C5TC", "PMX": "DEMO-P5TC", "SMX": "DEMO-S10TC", "HDY": "DEMO-H7TC"}
 UNITS = {"USD/day": ("USD", "day"), "USD/tonne": ("USD", "tonne"), "PTS": ("", "point")}
-TENORS = {"month": "月", "quarter": "季", "year": "年", "spot": "现货"}
+TENORS = {"month": "Monthly", "quarter": "Quarterly", "year": "Annual", "spot": "Spot"}
 
 
 def day(value):
@@ -21,28 +21,28 @@ def day(value):
             return date.fromisoformat(value.strip())
         except ValueError:
             pass
-    raise ValueError("日期须为有效的 YYYY-MM-DD 或 Excel 日期单元格")
+    raise ValueError("Use a valid YYYY-MM-DD date or an Excel date cell")
 
 
 def price(value):
     raw = str(value).strip()
     if not re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", raw):
-        raise ValueError("报价须为十进制数，千位逗号须正确分组")
+        raise ValueError("Price must be decimal, with correctly grouped thousands separators")
     try:
         number = Decimal(raw.replace(",", ""))
     except InvalidOperation:
-        raise ValueError("报价格式无效") from None
+        raise ValueError("Invalid price format") from None
     if not number.is_finite() or abs(number) >= 10**12 or number.as_tuple().exponent < -10:
-        raise ValueError("报价超出支持的数值范围")
+        raise ValueError("Price is outside the supported numeric range")
     return number
 
 
 def period(tenor, start):
     if tenor not in {"month", "quarter", "year"}:
-        raise ValueError("交割粒度须为 month、quarter 或 year")
+        raise ValueError("Delivery tenor must be month, quarter or year")
     months = {"month": 1, "quarter": 3, "year": 12}[tenor]
     if start.day != 1 or (start.month - 1) % months:
-        raise ValueError("交割起日与期限粒度不匹配")
+        raise ValueError("Delivery start does not match the selected tenor")
     month = start.month + months - 1
     return start, date(start.year, month, calendar.monthrange(start.year, month)[1])
 
@@ -62,12 +62,12 @@ def contract(value):
     match = re.fullmatch(r"(?:CAL\s*)?(\d{4})", raw, re.I)
     if match:
         return "year", *period("year", date(int(match[1]), 1, 1))
-    raise ValueError("合约须为 Jan27、2027-01、Q1 2027 或 Cal 2027 等明确交割期")
+    raise ValueError("Specify a delivery period such as Jan27, 2027-01, Q1 2027 or Cal 2027")
 
 
 def label(tenor, start):
     if start is None:
-        return "交割期未确认"
+        return "Unconfirmed delivery"
     if tenor == "quarter":
         return f"Q{(start.month - 1) // 3 + 1} {start.year}"
     if tenor == "year":

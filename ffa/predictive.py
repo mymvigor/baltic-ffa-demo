@@ -11,8 +11,8 @@ MIN_CONDITIONAL = 20
 MIN_TRAIN_DATES = 60
 MIN_TEST = 30
 MODELS = ("Unchanged", "BFA momentum", "BFA only", "BFA + Spot")
-STAGES = {"all": "全部期限", "delivery": "交割期内", "m1": "提前 1 月", "m2": "提前 2 月",
-          "m3_5": "提前 3–5 月", "m6_11": "提前 6–11 月", "m12": "提前 12 月以上"}
+STAGES = {"all": "All maturities", "delivery": "In delivery", "m1": "M+1", "m2": "M+2",
+          "m3_5": "M+3 to M+5", "m6_11": "M+6 to M+11", "m12": "M+12 and beyond"}
 
 
 def stage(offset):

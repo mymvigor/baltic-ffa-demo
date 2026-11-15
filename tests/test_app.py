@@ -96,12 +96,17 @@ def test_predictive_views_preserve_price_history_and_guard_unverified_times(app)
     view = next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view")
     view.set_value("Daily changes").run()
     assert not app.exception
-    assert any("严格样本不足" in item.value for item in app.info)
-    next(widget for widget in app.radio if widget.label == "数据时点口径").set_value("探索回放").run()
+    assert next(widget for widget in app.radio if widget.label == "Validation").value == "Date replay"
+    next(widget for widget in app.radio if widget.label == "Validation").set_value("Verified timestamps").run()
+    assert any("availability timestamps are missing" in item.value for item in app.info)
+    next(widget for widget in app.radio if widget.label == "Validation").set_value("Date replay").run()
     assert not app.exception
     for name in ("Lead / lag", "Forecast backtest", "Price history"):
         next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view").set_value(name).run()
         assert not app.exception
+        if name != "Price history":
+            assert next(widget for widget in app.get("segmented_control") if widget.label == "Sample").value == "Historical peers"
+            assert next(widget for widget in app.get("segmented_control") if "3Y" in widget.options).value == "3Y"
     assert any(widget.label == "Spot monthly mean" for widget in app.toggle)
 
 
@@ -114,11 +119,14 @@ predictive_view(history(), (pd.Timestamp('2024-01-01'), pd.Timestamp('2024-12-20
                 'synthetic_predictive', 'Forecast backtest', ('synthetic-pit',))
 ''', default_timeout=60).run()
     assert not result.exception
-    next(widget for widget in result.toggle if widget.label.startswith("扩充样本外验证")).set_value(True).run()
+    assert next(widget for widget in result.get("segmented_control") if widget.label == "Sample").value == "Historical peers"
+    assert any("Adding Spot vs BFA-only" in item.value for item in result.markdown)
+    next(widget for widget in result.selectbox if widget.label == "Score").set_value("accuracy").run()
     assert not result.exception
-    assert any("Spot 额外信息检验" in item.value for item in result.markdown)
-    next(widget for widget in result.selectbox if widget.label == "回测展示").set_value("accuracy").run()
-    assert not result.exception
+    for horizon in (3, 5):
+        next(widget for widget in result.get("segmented_control") if widget.label == "Forecast horizon").set_value(horizon).run()
+        assert not result.exception
+        assert any("Adding Spot vs BFA-only" in item.value for item in result.markdown)
     assert not result.dataframe
 
 
