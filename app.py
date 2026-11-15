@@ -18,6 +18,7 @@ from ffa.research import calendar_spreads, comparison_studies, comparison_worksp
 from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
+from ffa.predictive_ui import VIEWS, predictive_view
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -290,7 +291,14 @@ def main():
             view = inputs(*bounds)
             timestamps = tuple(pd.Timestamp(day) for day in bounds)
             if mode == "Spot + BFA":
-                spot_comparison(view.local, view.days, timestamps, key)
+                study = choice("Spot vs BFA view", VIEWS, key + "_study", "Price history",
+                               control="segmented_control")
+                if study == "Price history":
+                    spot_comparison(view.local, view.days, timestamps, key)
+                else:
+                    # Load the long training history only when research is selected.
+                    complete = inputs(first, last)
+                    predictive_view(complete.fixed, timestamps, key + "_predictive", study, stamp)
             else:
                 basis, calendar_studies = comparison_studies(view.local, view.days)
                 def universe():

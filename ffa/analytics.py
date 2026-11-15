@@ -7,10 +7,13 @@ FIELDS = ["identity", "quote_day", "vessel", "product", "kind", "currency", "uni
 
 
 def frame(rows):
-    result = pd.DataFrame(rows, columns=FIELDS)
+    raw = pd.DataFrame(rows)
+    result = raw.reindex(columns=FIELDS)
     result["price"] = result["price"].astype(float)
     for field in ("quote_day", "delivery_start", "delivery_end"):
         result[field] = pd.to_datetime(result[field])
+    available = raw.get("available_at", raw.get("received_at", pd.Series(index=raw.index, dtype=object)))
+    result["available_at"] = pd.to_datetime(available, errors="coerce", utc=True, format="mixed")
     return result
 
 

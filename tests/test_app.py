@@ -92,6 +92,36 @@ def test_relationship_window_updates_existing_charts(app):
     assert any("20 consecutive" in item.value for item in app.info)
 
 
+def test_predictive_views_preserve_price_history_and_guard_unverified_times(app):
+    view = next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view")
+    view.set_value("Daily changes").run()
+    assert not app.exception
+    assert any("严格样本不足" in item.value for item in app.info)
+    next(widget for widget in app.radio if widget.label == "数据时点口径").set_value("探索回放").run()
+    assert not app.exception
+    for name in ("Lead / lag", "Forecast backtest", "Price history"):
+        next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view").set_value(name).run()
+        assert not app.exception
+    assert any(widget.label == "Spot monthly mean" for widget in app.toggle)
+
+
+def test_predictive_backtest_renders_real_metrics_only_after_sample_guard(monkeypatch):
+    result = AppTest.from_string('''
+import pandas as pd
+from test_predictive import history
+from ffa.predictive_ui import predictive_view
+predictive_view(history(), (pd.Timestamp('2024-01-01'), pd.Timestamp('2024-12-20')),
+                'synthetic_predictive', 'Forecast backtest', ('synthetic-pit',))
+''', default_timeout=60).run()
+    assert not result.exception
+    next(widget for widget in result.toggle if widget.label.startswith("扩充样本外验证")).set_value(True).run()
+    assert not result.exception
+    assert any("Spot 额外信息检验" in item.value for item in result.markdown)
+    next(widget for widget in result.selectbox if widget.label == "回测展示").set_value("accuracy").run()
+    assert not result.exception
+    assert not result.dataframe
+
+
 def test_all_benchmarks_and_rebased_mode_still_work(app):
     next(widget for widget in app.get("segmented_control") if widget.label == "Analysis").set_value("Multi-series").run()
     next(widget for widget in app.selectbox if widget.label == "Universe").set_value("All benchmarks").run()
