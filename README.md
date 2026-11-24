@@ -4,7 +4,7 @@ Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic da
 
 All four modules appear on one page, with global vessel and benchmark selection:
 
-1. **Forecast:** monthly settlement Difference and Ratio models, independently configured exploratory corrections and chronological validation. The current forecast chart appears by default; historical charts calculate on demand.
+1. **Forecast:** monthly settlement Difference and Ratio models, independently configured exploratory corrections and chronological validation. The default daily chart switches between forecast / observed-price curves and their difference. Historical comparison charts calculate on demand.
 2. **Spot Market:** Spot / MA5 / MA20, Bollinger bands and Spot seasonality.
 3. **Forward Market:** one Price Explorer for prices, normalization, differences, ratios and calendar overlays, plus Forward Curve and Repricing views.
 4. **Market Research:** daily changes, lead/lag, short-horizon BFA validation and relationships.
@@ -12,6 +12,8 @@ All four modules appear on one page, with global vessel and benchmark selection:
 Charts use the full content width without data tables. Selected views load on demand.
 
 Settlement models show both equations and their intermediate values. Published settlement sessions are locked when the verified calendar is available. Quarterly and annual strips are shown by monthly settlement leg. Current dry-index calendars cover 2026 and 2027. Earlier reconstructed actuals are not reconciled to clearinghouse prints. Reference-window comparisons use the early development interval; the recent 30% is reserved for holdout scoring. Fitted exploratory corrections use earlier matured targets and reject highly collinear inputs. Manual factors are subjective scenarios.
+
+Daily curves keep one target month fixed and use only reference data eligible on each forecast date. Compare against same-day BFA, or reconstructed final settlement once the month has matured and sufficient actuals are available. Before settlement, the difference from BFA is a pricing gap, not realized forecast error. Enable Include settled contracts in Advanced Settings to revisit matured targets. Reconstructed curves are labelled separately from saved forecasts; historical fitted or subjective exploratory predictions are shown only where actual saved records exist. Forecast defaults to Latest quote, so new assessments and newly ingested contracts become available without changing a pinned forecast date. Existing valid contract selections are preserved.
 
 Configurations and generated current forecasts are saved in the current browser and can be exported. Records include their actual creation time. Replay dates do not generate historical forecast records. Background daily generation and cross-device journal storage have not yet been connected to the private collector.
 

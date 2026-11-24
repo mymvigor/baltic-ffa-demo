@@ -64,6 +64,21 @@ def test_browser_settings_accept_numpy_years():
     raw = {"years": [np.int64(2026), np.int32(2025)], "flag": np.bool_(True)}
     assert json.loads(json.dumps(encode(raw))) == {"years": [2026, 2025], "flag": True}
 
+
+def test_multiselect_preserves_selection_when_new_options_arrive():
+    result = AppTest.from_string('''
+import streamlit as st
+from ffa.preferences import multi
+if st.button("New year"):
+    st.session_state["new_year"] = True
+options = [2026, 2025, 2024] if st.session_state.get("new_year") else [2025, 2024]
+multi("Years", options, "dynamic_years", options[:1], len(options))
+''', default_timeout=15).run()
+    result.multiselect[0].set_value([2024]).run()
+    result.button[0].click().run()
+    assert not result.exception
+    assert result.multiselect[0].value == [2024]
+
 def test_predictive_backtest_renders_real_metrics_only_after_sample_guard(monkeypatch):
     result = AppTest.from_string('''
 import pandas as pd

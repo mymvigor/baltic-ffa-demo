@@ -131,6 +131,47 @@ def eligible_years(spot, issue):
     return sorted(years, reverse=True)
 
 
+def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=None, strict=False,
+                    factors=(), weights=()):
+    """Fixed-target daily reconstruction; final actuals are comparison labels only."""
+    target, asof = pd.Period(target, "M"), pd.Timestamp(asof)
+    spot = spot_history(quotes)
+    snapshots = quotes[quotes.kind.eq("BFA") & quotes.identity.eq(contract) & quotes.quote_day.le(asof)]
+    if snapshots.empty:
+        return pd.DataFrame()
+    dates = spot.index[(spot.index >= snapshots.quote_day.min()) &
+                      (spot.index <= min(asof, target.end_time.normalize()))]
+    monthly = snapshots.tenor.eq("month").all()
+    actual = month_actual(spot_history(quotes, asof) if strict else spot, target, asof)
+    output = []
+    for date in dates:
+        if strict:
+            cutoff = date.tz_localize("UTC") + pd.Timedelta(days=1)
+            known = snapshots[snapshots.quote_day.le(date)]
+            if not pd.to_datetime(known.available_at, utc=True, errors="coerce").lt(cutoff).any():
+                continue
+        visible = spot_history(quotes, date) if strict else spot
+        allowed = set(eligible_years(visible, date))
+        # Keep selected calendar years, never import years unavailable on this date.
+        usable = [year for year in years if year in allowed]
+        if custom and custom[1] > date:
+            continue
+        prediction = forecast(visible, date, target, usable, window, custom)
+        if prediction is None:
+            continue
+        observed = snapshots[snapshots.quote_day.eq(date)] if monthly else snapshots.iloc[:0]
+        if strict:
+            cutoff = date.tz_localize("UTC") + pd.Timedelta(days=1)
+            observed = observed[pd.to_datetime(observed.available_at, utc=True, errors="coerce").lt(cutoff)]
+        row = dict(date=date, BFA=float(observed.price.iloc[-1]) if not observed.empty else np.nan,
+                   Actual=np.nan if actual is None else actual, **prediction["values"])
+        if factors:
+            x = np.asarray([prediction["factors"][factor] for factor in factors])
+            row["correction"] = float(x @ np.asarray(weights)) * prediction["multiplier"]
+        output.append(row)
+    return pd.DataFrame(output)
+
+
 def replay(quotes, issue, target, windows, offsets, custom=None, strict=False):
     """Matched monthly targets, one BFA snapshot per historical contract."""
     spot = spot_history(quotes)

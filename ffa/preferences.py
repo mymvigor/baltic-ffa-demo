@@ -51,9 +51,11 @@ def restore_preferences():
             memory.setdefault(key, value)
     st.session_state["_ffa_browser_loaded"] = True
     for name in saved:
-        key = "ffa_" + name
-        if name in memory and key in st.session_state:
-            del st.session_state[key]
+        prefix = "ffa_" + name
+        if name in memory:
+            for key in list(st.session_state):
+                if key == prefix or key.startswith(prefix + "_"):
+                    del st.session_state[key]
     st.rerun()
 
 
@@ -65,10 +67,14 @@ def persist_preferences(key):
                     default={"saved": None}, on_saved_change=lambda: None, height=0)
 
 
-def _remember(key, default, decode, render):
+def _remember(key, default, decode, render, domain=None):
     memory = st.session_state.setdefault("_ffa_preferences", {})
     short = hashlib.blake2s(key.encode(), digest_size=6).hexdigest()
     widget_key = "ffa_" + short
+    if domain is not None:
+        # Streamlit resets a multiselect when its options change. Give each
+        # option domain its own widget identity, while retaining logical memory.
+        widget_key += "_" + hashlib.blake2s(domain.encode(), digest_size=4).hexdigest()
 
     def save():
         value = st.session_state[widget_key]
@@ -130,6 +136,7 @@ def multi(label, options, key, default, limit, *, container=st, format_func=str)
             label, options, key=widget_key, on_change=save,
             max_selections=limit, format_func=format_func,
         ),
+        domain=json.dumps([encode(options), limit]),
     )
 
 

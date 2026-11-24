@@ -8,9 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from .analytics import delivery_label
-from .preferences import calendar, choice, multi
+from .preferences import calendar, choice, encode, multi, toggle
 from .settlement import (BASIC, FACTORS, SUPPORTED, WINDOWS, eligible_years, exploratory_replay, fit_adjustment,
-                         forecast, metrics, replay, spot_history)
+                         daily_forecasts, forecast, metrics, replay, spot_history)
 from .ui import COLORS, chart, date_axis, display
 
 MIN_TEST = 12
@@ -22,12 +22,18 @@ def _replay(revision, scope, issue, month, windows, offsets, custom, strict, _qu
     return replay(_quotes, issue, month, windows, offsets, custom, strict)
 
 
+@st.cache_data(max_entries=12, show_spinner=False)
+def _daily(revision, scope, contract, month, issue, years, window, custom, strict, factors, weights, _quotes):
+    return daily_forecasts(_quotes, contract, month, issue, years, window, custom, strict, factors, weights)
+
+
 def _log(key, config, month, issue, value, bfa, model, observed_through, revision):
     if issue != observed_through or not np.isfinite(value):
         return
     memory = st.session_state.setdefault("_ffa_preferences", {})
     name = sha256(key.encode()).hexdigest()[:12]
     log = memory.setdefault(name, {"configs": {}, "forecasts": {}})
+    config = encode(config)
     serialized = json.dumps(config, sort_keys=True)
     version = sha256(serialized.encode()).hexdigest()[:12]
     data_version = sha256(str(revision).encode()).hexdigest()[:16]
@@ -75,12 +81,17 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     state = journal + "_" + restored
     latest = spot.index[-1]
     with st.popover("Advanced Settings"):
-        issue = pd.Timestamp(calendar("Forecast date", state+"_issue", latest.date(), spot.index[0].date(), latest.date()))
+        date_mode = choice("As of", ["Latest quote", "Custom date"], state+"_date_mode")
+        issue = latest if date_mode == "Latest quote" else pd.Timestamp(calendar(
+            "Forecast date", state+"_issue", latest.date(), spot.index[0].date(), latest.date()))
+        include_settled = toggle("Include settled contracts", state+"_settled")
         validation = choice("Validation data", ["Date replay", "Verified timestamps"], state+"_strict",
                             config.get("validation", "Date replay"))
     strict = validation == "Verified timestamps"
     current_spot = spot_history(quotes, issue) if strict else spot
-    available = forward[forward.quote_day.le(issue) & forward.delivery_end.ge(issue)].copy()
+    available = forward[forward.quote_day.le(issue)].copy()
+    if not include_settled:
+        available = available[available.delivery_end.ge(issue)]
     if strict:
         cutoff = issue.tz_localize("UTC") + pd.Timedelta(days=1)
         available = available[available.available_at.lt(cutoff)]
@@ -99,6 +110,12 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
         st.caption("This strip settles in monthly legs. Select a leg. The strip BFA cannot be compared directly with a monthly forecast.")
     leg = choice("Settlement month", list(map(str, strip)), state+"_leg", config.get("leg")) if len(strip) > 1 else str(strip[0])
     month = pd.Period(leg, "M")
+    chart_asof = issue
+    if month.end_time < issue:
+        # Revisit the last forecast date of this contract, rather than forecasting
+        # an already-known settlement with today's reference data.
+        issue = spot.loc[:month.end_time].index[-1]
+        current_spot = spot_history(quotes, issue) if strict else spot
     years_available = eligible_years(current_spot, issue)
     if not years_available:
         st.info("Complete historical Spot years are unavailable for this forecast date and data mode.")
@@ -170,8 +187,8 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     windows = tuple(w for w in WINDOWS if w != "Custom" or custom)
     offsets = tuple(issue.year - year for year in years)
     scope = (vessel, benchmark, len(quotes))
-    chart_view = choice("Forecast chart", ("Current forecast", *VALIDATION_VIEWS), state + "_chart_view")
-    requested = chart_view != "Current forecast"
+    chart_view = choice("Forecast chart", ("Daily forecast", *VALIDATION_VIEWS), state + "_chart_view")
+    requested = chart_view != "Daily forecast"
     requires_fit = model == "Exploratory Model" and method != "Manual" and bool(factors)
     rows = pd.DataFrame()
     if requested or requires_fit:
@@ -215,22 +232,82 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
             st.caption("The custom adjustment is recorded prospectively. Historical scores below evaluate only factors with historical observations.")
         if coefficients:
             st.caption(coefficients)
-    if not synthetic:
+    if not synthetic and not include_settled:
         _log(journal, settings, month, issue, price, bfa, model, latest, revision)
-    if chart_view == "Current forecast":
-        estimates = {name: value["values"][name] for name in BASIC}
-        if model == "Exploratory Model":
-            estimates["Exploratory"] = price
-        estimates = {name: estimate for name, estimate in estimates.items() if np.isfinite(estimate)}
-        fig = chart("Settlement estimate · USD/day", height=360)
-        fig.add_bar(x=list(estimates), y=list(estimates.values()), marker_color=COLORS[:len(estimates)],
-                    text=[f"{estimate:,.0f}" for estimate in estimates.values()], textposition="outside")
-        if pd.notna(bfa):
-            fig.add_hline(y=float(bfa), line_dash="dash", line_color=COLORS[3], annotation_text="Current BFA")
-        display(fig, state + "_current_forecast")
-        st.caption(f"{month} settlement estimates. Select a historical chart to calculate cached validation results.")
+    if chart_view == "Daily forecast":
+        with st.spinner("Calculating daily forecast history…"):
+            daily = _daily(revision, scope, contract, month, chart_asof, tuple(years), window, custom, strict,
+                           tuple(factors) if method == "Manual" else (), tuple(weights), quotes)
+        _trajectory(daily, journal, settings, selected, model, method, custom_factor, state)
     else:
         _validation(rows, active, model, selected, factors, method, weights, strict, price-bfa, state, chart_view)
+
+
+def _trajectory(daily, journal, settings, selected, model, method, custom_factor, key):
+    if daily.empty:
+        st.info("No eligible daily forecasts for this contract and data mode.")
+        return
+    daily = daily.copy()
+    labels = list(BASIC)
+    if model == "Exploratory Model" and method == "Manual" and not custom_factor.strip():
+        daily["Exploratory"] = daily[selected] + daily.get("correction", 0.)
+        labels = ["Exploratory", selected]
+    log = st.session_state.get("_ffa_preferences", {}).get(sha256(journal.encode()).hexdigest()[:12], {})
+    version = sha256(json.dumps(encode(settings), sort_keys=True).encode()).hexdigest()[:12]
+    records = [r for r in log.get("forecasts", {}).values()
+               if r.get("version") == version and r.get("delivery") == settings["leg"]]
+    saved = pd.DataFrame(records)
+    if not saved.empty:
+        # Preserve immutable revisions in storage; display the last generated
+        # version per quote day without joining different configurations.
+        saved = saved.sort_values("created_at").drop_duplicates("issue", keep="last")
+        saved["date"] = pd.to_datetime(saved.issue)
+        saved = saved[saved.date.ge(daily.date.min()) & saved.date.le(daily.date.max())].sort_values("date")
+    mode = choice("Chart mode", ["Forecast vs Actual", "Difference"], key+"_trajectory_mode",
+                  control="segmented_control")
+    references = ["BFA", "Actual settlement"] if daily.Actual.notna().any() else ["BFA"]
+    reference = choice("Compare with", references, key+"_gap", references[-1], control="segmented_control")
+    column = "Actual" if reference == "Actual settlement" else "BFA"
+    if mode == "Difference" and not daily[column].notna().any():
+        st.info("No matching monthly-leg BFA quotes are available for this difference. Select Forecast vs Actual to see the forecast curve.")
+        return
+    fig = chart("USD/day", height=390)
+    for i, name in enumerate(labels):
+        values = daily[name] if mode == "Forecast vs Actual" else daily[name]-daily[column]
+        if values.notna().any():
+            fig.add_scatter(x=daily.date, y=values, name=name, mode="lines+markers",
+                            line_color=COLORS[i], marker_size=3, connectgaps=False)
+    if mode == "Forecast vs Actual" and daily[column].notna().any():
+        fig.add_scatter(x=daily.date, y=daily[column], mode="lines+markers",
+                        name="Actual settlement (reconstructed)" if column == "Actual" else "BFA",
+                        line=dict(color=COLORS[3], dash="dot" if column == "Actual" else "solid"),
+                        marker_size=3, connectgaps=False)
+    if not saved.empty:
+        matched = saved.merge(daily[["date", column]], on="date", how="left")
+        values = matched.price if mode == "Forecast vs Actual" else matched.price-matched[column]
+        fig.add_scatter(x=matched.date, y=values, name="Saved forecasts", mode="markers",
+                        marker=dict(symbol="diamond", size=8, color=COLORS[5]))
+    if mode == "Difference":
+        fig.add_hline(y=0, line_dash="dot")
+        st.markdown(f"**Forecast − {reference} · daily difference**")
+    else:
+        st.markdown("**Daily settlement forecasts · fixed target contract**")
+    _trajectory_axis(fig, daily)
+    display(fig, key+"_daily_forecast")
+    st.caption("Each date predicts the same settlement month. Curves are reconstructed with the current settings using data eligible on each date; diamonds are forecasts actually generated and saved in this browser.")
+    if model == "Exploratory Model" and (method != "Manual" or custom_factor.strip()):
+        st.caption("Estimated or subjective exploratory forecasts appear only as saved diamonds. No historical coefficients or subjective observations are invented; the base-model curve remains visible.")
+    if column == "BFA":
+        st.caption("BFA is the observed forward price, not final settlement. Forecast minus same-day BFA is a pricing gap, not a realized forecast error. Missing BFA quotes remain gaps.")
+    if not daily.Actual.notna().any():
+        st.caption("Final actual settlement is not yet available or cannot be reconstructed reliably. Enable Include settled contracts in Advanced Settings to inspect matured targets.")
+
+
+def _trajectory_axis(fig, daily):
+    date_axis(fig, (daily.date.min(), daily.date.max()))
+    fig.update_xaxes(rangeselector=dict(buttons=[dict(count=n, label=label, step=step, stepmode="backward")
+        for n, label, step in [(1, "1M", "month"), (3, "3M", "month"), (6, "6M", "month"), (1, "1Y", "year")]]
+        + [dict(label="All", step="all")]))
 
 
 def _validation(rows, active, model, selected, factors, method, weights, strict, gap, key, view):
