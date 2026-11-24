@@ -9,8 +9,8 @@ import streamlit as st
 
 from .analytics import delivery_label
 from .preferences import calendar, choice, encode, multi, toggle
-from .settlement import (BASIC, FACTORS, SUPPORTED, WINDOWS, eligible_years, exploratory_replay, fit_adjustment,
-                         daily_forecasts, forecast, metrics, replay, spot_history)
+from .settlement import (BASIC, FACTORS, SUPPORTED, WINDOWS, bfa_history, eligible_years, exploratory_replay, fit_adjustment,
+                         daily_forecasts, forecast, metrics, replay, spot_history, subjective_adjustment)
 from .ui import COLORS, chart, date_axis, display
 
 MIN_TEST = 12
@@ -18,13 +18,13 @@ VALIDATION_VIEWS = ("Forecast vs Actual", "Forecast Error", "Model Comparison", 
 
 
 @st.cache_data(max_entries=8, show_spinner=False)
-def _replay(revision, scope, issue, month, windows, offsets, custom, strict, _quotes):
-    return replay(_quotes, issue, month, windows, offsets, custom, strict)
+def _replay(revision, scope, issue, month, windows, offsets, custom, strict, basis, _quotes):
+    return replay(_quotes, issue, month, windows, offsets, custom, strict, basis)
 
 
 @st.cache_data(max_entries=12, show_spinner=False)
-def _daily(revision, scope, contract, month, issue, years, window, custom, strict, factors, weights, _quotes):
-    return daily_forecasts(_quotes, contract, month, issue, years, window, custom, strict, factors, weights)
+def _daily(revision, scope, contract, month, issue, years, window, custom, strict, factors, weights, basis, _quotes):
+    return daily_forecasts(_quotes, contract, month, issue, years, window, custom, strict, factors, weights, basis)
 
 
 def _log(key, config, month, issue, value, bfa, model, observed_through, revision):
@@ -66,7 +66,8 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     if benchmark not in SUPPORTED and not synthetic:
         st.info("Settlement forecasting is available for supported dry time-charter basket indices.")
         return
-    quotes = quotes[quotes.currency.eq("USD") & quotes.unit.eq("day")]
+    quotes = quotes[quotes.vessel.eq(vessel) & quotes["product"].eq(benchmark) &
+                    quotes.currency.eq("USD") & quotes.unit.eq("day")]
     if quotes.empty:
         st.info("No USD/day quotes for this benchmark.")
         return
@@ -79,6 +80,9 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     journal = key + "_" + model
     restored, config = _restore(journal)
     state = journal + "_" + restored
+    basis = choice("Forecast input", ["Spot", "BFA"], state+"_basis", config.get("basis", "Spot"),
+                   control="segmented_control")
+    state += "_" + basis
     latest = spot.index[-1]
     with st.popover("Advanced Settings"):
         date_mode = choice("As of", ["Latest quote", "Custom date"], state+"_date_mode")
@@ -110,6 +114,9 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
         st.caption("This strip settles in monthly legs. Select a leg. The strip BFA cannot be compared directly with a monthly forecast.")
     leg = choice("Settlement month", list(map(str, strip)), state+"_leg", config.get("leg")) if len(strip) > 1 else str(strip[0])
     month = pd.Period(leg, "M")
+    if basis == "BFA" and len(strip) > 1:
+        st.info("BFA-based settlement models require a monthly fixed contract. Select a monthly contract or use Spot input for this strip's monthly leg.")
+        return
     chart_asof = issue
     if month.end_time < issue:
         # Revisit the last forecast date of this contract, rather than forecasting
@@ -134,14 +141,16 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
         custom = pd.Timestamp(start), pd.Timestamp(end)
     # Filter on the selected reference and target, so the five default years
     # are usable rather than merely the five most recent archive files.
+    curves = bfa_history(quotes) if basis == "BFA" else None
+    forecast_args = dict(basis=basis, curves=curves, strict=strict)
     year_candidates = [year for year in years_available
-                       if forecast(current_spot, issue, month, [year], window, custom)]
+                       if forecast(current_spot, issue, month, [year], window, custom, **forecast_args)]
     defaults = [year for year in config.get("years", year_candidates[:5]) if year in year_candidates]
     years = multi("Historical years", year_candidates, state+"_years", defaults or year_candidates[:5], len(year_candidates)) if year_candidates else []
     if not years:
-        st.info("No eligible analogues or the current settlement calendar has missing observations. Check the forecast date and reference window.")
+        st.info("No eligible analogues or the current settlement calendar has missing observations. BFA input also requires matching monthly-contract history for the full reference window. Try a shorter reference window or Spot input.")
         return
-    value = forecast(current_spot, issue, month, years, window, custom)
+    value = forecast(current_spot, issue, month, years, window, custom, **forecast_args)
     if value is None:
         st.info("The selected month lacks enough observations.")
         return
@@ -159,13 +168,23 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
         st.caption("Future dry-index calendar unavailable. The forecast assumes a constant level for the whole month.")
     elif value["fixed"]:
         st.caption(f"{value['fixed']} observed settlement days fixed · {sessions_left} remaining.")
+    judgement, strength, maximum_pct, judgement_note = "Neutral", .3, 10., ""
     if model == "Exploratory Model":
-        method = choice("Adjustment", ["Manual", "Linear", "Ridge"], state+"_method", config.get("method", "Manual"),
-                        control="segmented_control")
-        chosen = multi("Factors", FACTORS, state+"_factors", config.get("factors", []), 4)
-        factors = [FACTORS[name][1] for name in chosen]
-        with st.popover("Factor settings"):
-            for index, name in enumerate(chosen):
+        judgement = choice("Market judgement", ["Neutral", "Bearish", "Bullish"], state+"_judgement",
+                           config.get("judgement", "Neutral"), control="segmented_control")
+        strength = st.number_input("Judgement strength (0–1)", 0., 1., float(config.get("strength", .3)), .1,
+                                   key=state+"_judgement_strength")
+        judgement_note = st.text_input("Reason (optional)", value=config.get("judgement_note", ""),
+                                      max_chars=240, key=state+"_judgement_note",
+                                      placeholder="e.g. More vessels competing for fewer cargoes")
+        with st.expander("Advanced model factors", expanded=False):
+            maximum_pct = st.number_input("Maximum remaining-price adjustment (%)", 0., 100.,
+                                         float(config.get("maximum_pct", 10.)), 1., key=state+"_maximum_pct")
+            method = choice("Adjustment", ["Manual", "Linear", "Ridge"], state+"_method", config.get("method", "Manual"),
+                            control="segmented_control")
+            chosen = multi("Factors", FACTORS, state+"_factors", config.get("factors", []), 4)
+            factors = [FACTORS[name][1] for name in chosen]
+            for name in chosen:
                 guide, field = FACTORS[name]
                 st.caption(f"{name}. {guide}")
                 if method == "Manual":
@@ -177,10 +196,11 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
                 if custom_factor.strip():
                     custom_adjustment = st.number_input("Custom adjustment (USD/day)", value=float(config.get("custom_adjustment", 0.)),
                                                          step=100., key=state+"_custom_value")
-                    st.caption("Custom observations are saved with this forecast. They are excluded from historical scoring.")
-        if len(chosen) >= 3:
-            st.caption("Use a small set of distinct factors. Momentum and strength can overlap.")
-    settings = dict(contract=contract, leg=str(month), window=window, years=list(years), base=selected, method=method,
+            st.caption("Optional quantitative factors use existing data. Highly overlapping factors can overfit.")
+        signed_pct = {"Bearish": -1, "Neutral": 0, "Bullish": 1}[judgement] * strength * maximum_pct
+        st.caption(f"Subjective scenario: {judgement.lower()} · remaining-price adjustment {signed_pct:+.1f}% (strength {strength:.1f} × maximum {maximum_pct:g}%). Strength is not a probability or an estimated coefficient.")
+    settings = dict(contract=contract, leg=str(month), basis=basis, window=window, years=list(years), base=selected, method=method,
+                    judgement=judgement, strength=strength, maximum_pct=maximum_pct, judgement_note=judgement_note,
                     factors=[name for name, (_, field) in FACTORS.items() if field in factors], weights=dict(zip(factors, weights)),
                     custom_factor=custom_factor, custom_adjustment=custom_adjustment,
                     custom=[str(d.date()) for d in custom] if custom else None, validation=validation)
@@ -193,7 +213,7 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     rows = pd.DataFrame()
     if requested or requires_fit:
         with st.spinner("Calculating matched historical forecasts…"):
-            rows = _replay(revision, scope, issue, month, windows if requested else (window,), offsets, custom, strict, quotes)
+            rows = _replay(revision, scope, issue, month, windows if requested else (window,), offsets, custom, strict, basis, quotes)
     active = rows[rows.window.eq(str(window))].dropna(subset=[*BASIC, "Spot", "BFA", "Actual"]).sort_values("date") if not rows.empty else rows
     price = value["values"][selected]
     coefficients = None
@@ -216,20 +236,34 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
         else:
             price = np.nan
             st.info("Selected factors require more recent Spot observations.")
+    scenario_change = subjective_adjustment(value, selected, judgement, strength, maximum_pct)
+    if model == "Exploratory Model":
+        price += scenario_change
     def show_money(number):
         return f"{number:,.0f}" if pd.notna(number) else "—"
     a, b, c = st.columns(3)
     a.metric("Forecast Settlement", show_money(price))
     b.metric("Current BFA", show_money(bfa))
     c.metric("Forecast − BFA", show_money(price-bfa))
+    if pd.notna(price) and pd.notna(bfa) and bfa > 0:
+        outlook = "higher settlement than current BFA" if price-bfa > 1 else "lower settlement than current BFA" if price-bfa < -1 else "settlement near current BFA"
+        st.markdown(f"**Model view: {outlook}** · {(price/bfa-1):+.1%}.")
+        st.caption("This is a settlement outlook, not a forecast of the next 1/3/5 trading days. Short-term BFA forecasts remain in Market Research.")
+    else:
+        st.caption("A directional settlement comparison needs a valid forecast and a positive same-day BFA.")
     st.caption(f"USD/day · {month} · {selected} base. A {value['A']:,.0f}, B {value['B']:,.0f}, C {value['C']:,.0f}.")
-    st.caption("Historical years anchor the reference period. Cross-year target months follow the same year offset.")
-    st.caption(f"C + (A − B) = {show_money(value['remaining']['Difference'])} · C × (A ÷ B) = "
-               f"{show_money(value['remaining']['Ratio'])}. Formula estimates apply to remaining sessions; observed sessions keep their actual value.")
+    if basis == "BFA":
+        st.caption("A: current fixed-contract BFA reference mean. B: historical matching-month contract BFA reference means at the same seasonal position and delivery distance. C: those contracts' final Spot settlement means. BFA already prices the full month; known Spot is not blended twice.")
+    else:
+        st.caption("A: current Spot reference mean. B: historical seasonal Spot reference means. C: historical target-month Spot settlement means. Cross-year targets follow the same year offset.")
+    st.caption(f"C + (A − B) = {show_money(value['values']['Difference'] if basis == 'BFA' else value['remaining']['Difference'])} · C × (A ÷ B) = "
+               f"{show_money(value['values']['Ratio'] if basis == 'BFA' else value['remaining']['Ratio'])}. "
+               + ("BFA formulas estimate full-month settlement directly." if basis == "BFA" else "Formula estimates apply to remaining sessions; observed sessions keep their actual value."))
     if model == "Exploratory Model":
         st.caption("Manual weights are subjective." if method == "Manual" else "Fitted coefficients use only matured labels.")
+        st.caption(f"Subjective settlement adjustment: {scenario_change:+,.0f} USD/day. Published settlement observations stay fixed. Current judgements are saved prospectively and excluded from historical backtests.")
         if custom_factor.strip():
-            st.caption("The custom adjustment is recorded prospectively. Historical scores below evaluate only factors with historical observations.")
+            st.caption("Custom adjustments are also excluded from historical backtests.")
         if coefficients:
             st.caption(coefficients)
     if not synthetic and not include_settled:
@@ -237,19 +271,20 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     if chart_view == "Daily forecast":
         with st.spinner("Calculating daily forecast history…"):
             daily = _daily(revision, scope, contract, month, chart_asof, tuple(years), window, custom, strict,
-                           tuple(factors) if method == "Manual" else (), tuple(weights), quotes)
-        _trajectory(daily, journal, settings, selected, model, method, custom_factor, state)
+                           tuple(factors) if method == "Manual" else (), tuple(weights), basis, quotes)
+        _trajectory(daily, journal, settings, selected, model, method,
+                    bool(custom_factor.strip()) or judgement != "Neutral", state)
     else:
         _validation(rows, active, model, selected, factors, method, weights, strict, price-bfa, state, chart_view)
 
 
-def _trajectory(daily, journal, settings, selected, model, method, custom_factor, key):
+def _trajectory(daily, journal, settings, selected, model, method, subjective, key):
     if daily.empty:
         st.info("No eligible daily forecasts for this contract and data mode.")
         return
     daily = daily.copy()
     labels = list(BASIC)
-    if model == "Exploratory Model" and method == "Manual" and not custom_factor.strip():
+    if model == "Exploratory Model" and method == "Manual" and not subjective:
         daily["Exploratory"] = daily[selected] + daily.get("correction", 0.)
         labels = ["Exploratory", selected]
     log = st.session_state.get("_ffa_preferences", {}).get(sha256(journal.encode()).hexdigest()[:12], {})
@@ -263,10 +298,10 @@ def _trajectory(daily, journal, settings, selected, model, method, custom_factor
         saved = saved.sort_values("created_at").drop_duplicates("issue", keep="last")
         saved["date"] = pd.to_datetime(saved.issue)
         saved = saved[saved.date.ge(daily.date.min()) & saved.date.le(daily.date.max())].sort_values("date")
-    mode = choice("Chart mode", ["Forecast vs Actual", "Difference"], key+"_trajectory_mode",
-                  control="segmented_control")
     references = ["BFA", "Actual settlement"] if daily.Actual.notna().any() else ["BFA"]
     reference = choice("Compare with", references, key+"_gap", references[-1], control="segmented_control")
+    mode = choice("Chart mode", ["Forecast vs Actual", "Difference"], key+"_trajectory_mode",
+                  control="segmented_control", format_func=lambda name: f"Forecast vs {reference}" if name == "Forecast vs Actual" else name)
     column = "Actual" if reference == "Actual settlement" else "BFA"
     if mode == "Difference" and not daily[column].notna().any():
         st.info("No matching monthly-leg BFA quotes are available for this difference. Select Forecast vs Actual to see the forecast curve.")
@@ -295,7 +330,7 @@ def _trajectory(daily, journal, settings, selected, model, method, custom_factor
     _trajectory_axis(fig, daily)
     display(fig, key+"_daily_forecast")
     st.caption("Each date predicts the same settlement month. Curves are reconstructed with the current settings using data eligible on each date; diamonds are forecasts actually generated and saved in this browser.")
-    if model == "Exploratory Model" and (method != "Manual" or custom_factor.strip()):
+    if model == "Exploratory Model" and (method != "Manual" or subjective):
         st.caption("Estimated or subjective exploratory forecasts appear only as saved diamonds. No historical coefficients or subjective observations are invented; the base-model curve remains visible.")
     if column == "BFA":
         st.caption("BFA is the observed forward price, not final settlement. Forecast minus same-day BFA is a pricing gap, not a realized forecast error. Missing BFA quotes remain gaps.")

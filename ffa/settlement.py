@@ -64,11 +64,31 @@ def reference(spot, cutoff, window, custom=None):
     return sample.iloc[:0] if len(sample) != window else sample
 
 
-def forecast(spot, issue, month, years, window=20, custom=None):
+def bfa_history(quotes):
+    """Monthly fixed contracts only; callers supply one benchmark and unit."""
+    rows = quotes[quotes.kind.eq("BFA") & quotes.tenor.eq("month") & quotes.price.notna()].copy()
+    return {pd.Period(month, "M"): part.sort_values("quote_day").drop_duplicates("quote_day", keep="last")
+            for month, part in rows.groupby("delivery_start")}
+
+
+def _bfa_reference(curves, month, cutoff, window, custom, strict):
+    rows = curves.get(month)
+    if rows is None:
+        return pd.Series(dtype=float)
+    rows = rows[rows.quote_day.le(cutoff)]
+    if strict:
+        cutoff_utc = cutoff.tz_localize("UTC") + pd.Timedelta(days=1)
+        rows = rows[pd.to_datetime(rows.available_at, utc=True, errors="coerce").lt(cutoff_utc)]
+    return reference(rows.set_index("quote_day").price, cutoff, window, custom)
+
+
+def forecast(spot, issue, month, years, window=20, custom=None, *, basis="Spot", curves=None, strict=False):
     issue, month = pd.Timestamp(issue), pd.Period(month, freq="M")
     visible = spot.loc[:issue]
-    current = reference(visible, issue, window, custom)
-    if current.empty:
+    current = (_bfa_reference(curves or {}, month, issue, window, custom, strict)
+               if basis == "BFA" else reference(visible, issue, window, custom))
+    anchor = min(custom[1], issue) if window == "Custom" and custom else issue
+    if current.empty or (anchor - current.index[-1]).days > 8:
         return None
     a = float(current.mean())
     analogues = []
@@ -79,8 +99,9 @@ def forecast(spot, issue, month, years, window=20, custom=None):
         historical_custom = None
         if custom is not None:
             historical_custom = tuple(shift_year(day, day.year + year - issue.year) for day in custom)
-        ref = reference(visible, historical_end, window, historical_custom)
         delivery = month - 12 * (issue.year - year)
+        ref = (_bfa_reference(curves or {}, delivery, historical_end, window, historical_custom, strict)
+               if basis == "BFA" else reference(visible, historical_end, window, historical_custom))
         c = month_actual(visible, delivery, issue)
         # Require a completed analogue year and seasonal reference anchored near its end date.
         anchor = historical_custom[1] if window == "Custom" else historical_end
@@ -110,6 +131,15 @@ def forecast(spot, issue, month, years, window=20, custom=None):
         if left is None or not fixed:
             return value
         return (fixed_sum + left * value) / (fixed + left)
+    if basis == "BFA":
+        # BFA quotes already estimate the full monthly settlement. Do not blend
+        # known Spot into them twice. Invert to the implied remaining level so
+        # later scenario changes still leave observed settlement sessions fixed.
+        for name in BASIC:
+            if left == 0:
+                remaining[name] = fixed_sum / fixed
+            elif fixed and left is not None:
+                remaining[name] = ((fixed + left) * remaining[name] - fixed_sum) / left
     tail = visible.tail(20)
     factors = {"seasonal": a - b, "trend": np.nan, "strength": np.nan, "volatility": np.nan}
     if len(tail) >= 5:
@@ -122,6 +152,14 @@ def forecast(spot, issue, month, years, window=20, custom=None):
                 multiplier=1. if left is None else left / (fixed + left), factors=factors)
 
 
+def subjective_adjustment(prediction, base, direction, strength, maximum_pct):
+    """An explicit scenario, not a fitted coefficient or probability."""
+    sign = {"Bearish": -1., "Neutral": 0., "Bullish": 1.}[direction]
+    if not 0 <= strength <= 1 or not 0 <= maximum_pct <= 100:
+        raise ValueError("Scenario strength or maximum adjustment is out of range")
+    return sign * strength * maximum_pct / 100 * abs(prediction["remaining"][base]) * prediction["multiplier"]
+
+
 def eligible_years(spot, issue):
     history = spot.loc[:issue]
     years = []
@@ -132,7 +170,7 @@ def eligible_years(spot, issue):
 
 
 def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=None, strict=False,
-                    factors=(), weights=()):
+                    factors=(), weights=(), basis="Spot"):
     """Fixed-target daily reconstruction; final actuals are comparison labels only."""
     target, asof = pd.Period(target, "M"), pd.Timestamp(asof)
     spot = spot_history(quotes)
@@ -143,6 +181,7 @@ def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=Non
                       (spot.index <= min(asof, target.end_time.normalize()))]
     monthly = snapshots.tenor.eq("month").all()
     actual = month_actual(spot_history(quotes, asof) if strict else spot, target, asof)
+    curves = bfa_history(quotes) if basis == "BFA" else None
     output = []
     for date in dates:
         if strict:
@@ -156,7 +195,7 @@ def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=Non
         usable = [year for year in years if year in allowed]
         if custom and custom[1] > date:
             continue
-        prediction = forecast(visible, date, target, usable, window, custom)
+        prediction = forecast(visible, date, target, usable, window, custom, basis=basis, curves=curves, strict=strict)
         if prediction is None:
             continue
         observed = snapshots[snapshots.quote_day.eq(date)] if monthly else snapshots.iloc[:0]
@@ -172,9 +211,10 @@ def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=Non
     return pd.DataFrame(output)
 
 
-def replay(quotes, issue, target, windows, offsets, custom=None, strict=False):
+def replay(quotes, issue, target, windows, offsets, custom=None, strict=False, basis="Spot"):
     """Matched monthly targets, one BFA snapshot per historical contract."""
     spot = spot_history(quotes)
+    curves = bfa_history(quotes) if basis == "BFA" else None
     available_spot = quotes.loc[quotes.kind.eq("Spot") & quotes.price.notna()].sort_values("quote_day")
     published = available_spot.drop_duplicates("quote_day").set_index("quote_day").available_at
     forward = quotes[quotes.kind.eq("BFA") & quotes.tenor.eq("month") &
@@ -211,7 +251,8 @@ def replay(quotes, issue, target, windows, offsets, custom=None, strict=False):
             target_available = stamps.max()
         dates = tuple(shift_year(d, d.year + date.year - issue.year) for d in custom) if custom else None
         for window in windows:
-            prediction = forecast(training_spot, date, month, years, window, dates)
+            prediction = forecast(training_spot, date, month, years, window, dates,
+                                  basis=basis, curves=curves, strict=strict)
             if prediction is None:
                 continue
             result.append(dict(date=date, delivery=month.start_time, matured=month.end_time.normalize(),

@@ -17,6 +17,10 @@ Daily curves keep one target month fixed and use only reference data eligible on
 
 Configurations and generated current forecasts are saved in the current browser and can be exported. Records include their actual creation time. Replay dates do not generate historical forecast records. Background daily generation and cross-device journal storage have not yet been connected to the private collector.
 
+Forecast input switches independently between Spot and BFA. In BFA mode, A is the selected monthly contract's BFA reference mean, B is the matching historical monthly contracts' reference mean at the same seasonal position and delivery distance, and C is their final Spot settlement mean. Difference and Ratio formulas remain unchanged. BFA inputs estimate the entire month's settlement; observed Spot is not blended into that estimate a second time. BFA history, formulas and chronological validation are kept separate from Spot mode; insufficient counterpart history is reported instead of substituting another tenor.
+
+Exploratory mode defaults to a simple prospective judgement: Neutral, Bearish or Bullish plus strength from 0 to 1 and an optional reason. The maximum remaining-price adjustment defaults to a subjective 10% and can be changed in Advanced model factors. Bearish strength 0.3 therefore reduces the unobserved portion's base price estimate by 3%; published settlement observations stay fixed. Judgements are saved as versioned scenarios, excluded from reconstructed historical performance, and are not probabilities or fitted coefficients. Optional quantitative factors and regression controls remain available under Advanced model factors. The result describes settlement above or below current BFA, rather than claiming a next-day BFA direction.
+
 Settlement rules: https://www.balticexchange.com/en/FFAS/How-to-trade-an-FFA/Part-four-Settlement.html
 Publication calendars: https://www.balticexchange.com/en/data-services/market-information0/holidays---non-publications.html
 

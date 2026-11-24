@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from ffa.settlement import daily_forecasts, forecast, sessions, shift_year, eligible_years
+from ffa.settlement import bfa_history, daily_forecasts, forecast, sessions, shift_year, eligible_years, subjective_adjustment
 from ffa.explorer import compare_prices
 
 
@@ -69,3 +69,42 @@ def test_daily_fixed_target_curves_keep_forecasts_point_in_time_and_actual_separ
     gap = quotes[~(quotes.kind.eq('BFA') & quotes.quote_day.eq('2026-11-03'))]
     curve = daily_forecasts(gap, 'nov', '2026-11', '2026-11-10', [2025])
     assert curve.loc[curve.date.eq('2026-11-03'), 'BFA'].isna().all()
+
+
+def test_bfa_basis_aligns_fixed_contracts_and_does_not_double_count_known_spot():
+    days = pd.bdate_range('2020-01-01', '2026-12-31')
+    spot = pd.Series(100.+(days.year-2020)*10, index=days)
+    quotes = []
+    for year, price in [(2024,120.),(2025,140.),(2026,180.)]:
+        for month in (11,12):
+            dates = pd.bdate_range(f'{year}-09-01', f'{year}-{month}-30')
+            quotes.append(pd.DataFrame(dict(quote_day=dates, price=price, kind='BFA', tenor='month',
+                delivery_start=pd.Timestamp(year,month,1), available_at=pd.NaT)))
+    quotes = pd.concat(quotes,ignore_index=True)
+    issue = pd.Timestamp('2026-11-10')
+    curves = bfa_history(quotes)
+    for month in ('2026-11','2026-12'):
+        value = forecast(spot,issue,month,[2025,2024],5,basis='BFA',curves=curves)
+        assert (value['A'],value['B'],value['C']) == (180.,130.,145.)
+        assert value['values']['Difference'] == pytest.approx(195.)
+        assert value['values']['Ratio'] == pytest.approx(145.*180/130)
+    modified = quotes.copy()
+    modified.loc[modified.quote_day.gt(issue),'price'] = 1e9
+    assert forecast(spot,issue,'2026-12',[2025,2024],5,basis='BFA',curves=bfa_history(modified))['values'] == value['values']
+    assert forecast(spot,issue,'2026-12',[2025],5,basis='BFA',curves=curves,strict=True) is None
+    settled = forecast(spot,pd.Timestamp('2026-11-30'),'2026-11',[2025],5,basis='BFA',curves=curves)
+    assert settled['values']['Difference'] == pytest.approx(160.)
+    assert subjective_adjustment(settled,'Difference','Bearish',.3,10.) == 0.
+
+
+def test_subjective_strength_is_explicit_and_only_changes_remaining_settlement():
+    days = pd.bdate_range('2020-01-01','2026-12-31')
+    spot = pd.Series(100.+(days.year-2020)*10,index=days)
+    for target in ('2026-11','2026-12'):
+        value = forecast(spot,pd.Timestamp('2026-11-10'),target,[2025],20)
+        change = subjective_adjustment(value,'Difference','Bearish',.3,10.)
+        assert change == pytest.approx(-.03*value['remaining']['Difference']*value['multiplier'])
+        assert subjective_adjustment(value,'Difference','Bullish',.3,10.) == -change
+        assert subjective_adjustment(value,'Difference','Neutral',.3,10.) == 0.
+        with pytest.raises(ValueError):
+            subjective_adjustment(value,'Difference','Bearish',1.3,10.)
