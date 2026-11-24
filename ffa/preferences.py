@@ -34,8 +34,10 @@ def restore_preferences():
     if loaded:
         return
     saved = result.saved
+    # Render defaults while browser storage is loading. The component callback
+    # reruns the page when the saved setting arrives.
     if saved is None:
-        st.stop()
+        return
     if not isinstance(saved, dict):
         saved = {}
     try:
@@ -44,14 +46,21 @@ def restore_preferences():
             memory.update(legacy)
     except ValueError:
         pass
-    memory.update({key: value for key, value in saved.items()
-                   if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{12}", key)})
+    for key, value in saved.items():
+        if isinstance(key, str) and re.fullmatch(r"[0-9a-f]{12}", key):
+            memory.setdefault(key, value)
     st.session_state["_ffa_browser_loaded"] = True
+    for name in saved:
+        key = "ffa_" + name
+        if name in memory and key in st.session_state:
+            del st.session_state[key]
     st.rerun()
 
 
 def persist_preferences(key):
     """Persist changes after a fragment rerun without rerunning the whole app."""
+    if not st.session_state.get("_ffa_browser_loaded"):
+        return
     _browser_memory(data=st.session_state.get("_ffa_preferences", {}), key="ffa_memory_" + key,
                     default={"saved": None}, on_saved_change=lambda: None, height=0)
 
@@ -69,7 +78,10 @@ def _remember(key, default, decode, render):
     encoded = memory.get(short)
     restored = decode(encoded, default)
     current = st.session_state.get(widget_key, restored)
-    st.session_state[widget_key] = decode(encode(current), restored)
+    valid = decode(encode(current), restored)
+    # Reassigning the widget on every rerun can overwrite a browser event.
+    if widget_key not in st.session_state or current != valid:
+        st.session_state[widget_key] = valid
     return render(restored, widget_key, save)
 
 
@@ -104,7 +116,9 @@ def multi(label, options, key, default, limit, *, container=st, format_func=str)
     def decode(raw, fallback):
         if not isinstance(raw, list):
             return fallback
-        return [lookup[item] for value in raw if (item := json.dumps(value)) in lookup][:limit]
+        # Restore a sensible default when every saved choice became unavailable.
+        filtered = [lookup[item] for value in raw if (item := json.dumps(value)) in lookup][:limit]
+        return fallback if raw and not filtered else filtered
 
     return _remember(
         key, list(default), decode,

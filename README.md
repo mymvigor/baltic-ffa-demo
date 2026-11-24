@@ -2,15 +2,21 @@
 
 Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic data. Live mode uses a private GitHub repository. Configure the GitHub read credential in Streamlit Secrets.
 
-The page has five clear sections, with one global benchmark selector and sidebar navigation:
+The page loads one of four modules at a time, with global vessel and benchmark selection:
 
-1. **Spot Analysis:** one Spot / MA5 / MA20 trend chart, followed by Bollinger bands.
-2. **Price Explorer:** the sole home for fixed and rolling price histories, Spot comparisons, multi-series overlays, rebasing, spreads and ratios. Spot monthly mean remains a switch. Frequency and indicator controls update the existing chart instead of creating duplicate price, average and band charts.
-3. **Term Structure:** the forward-curve snapshot, matched-delivery repricing or heatmap, and calendar spreads appear in sequence.
-4. **Market Relationships:** Spot / M+1 return correlation and within-contract change volatility add independent information. Percentile ranges are available directly on price and spread charts.
-5. **Seasonality:** multi-year Spot and rolling-tenor overlays.
+1. **Spot Market:** Spot / MA5 / MA20, Bollinger bands and Spot seasonality.
+2. **Forward Market:** one Price Explorer for prices, normalization, differences, ratios and calendar overlays, plus Forward Curve and Repricing views.
+3. **Forecast:** monthly settlement Difference and Ratio models, independently configured exploratory corrections and chronological validation.
+4. **Market Research:** daily changes, lead/lag, short-horizon BFA validation and relationships.
 
-Charts use the full content width, appear vertically in sequence and remain expanded. There are no visible data tables; exact values and coverage remain on hover. The normal real-data view has 10 charts rather than the previous 19.
+Charts use the full content width without data tables. Selected views load on demand.
+
+Settlement models show both equations and their intermediate values. Published settlement sessions are locked when the verified calendar is available. Quarterly and annual strips are shown by monthly settlement leg. Current dry-index calendars cover 2026 and 2027. Earlier reconstructed actuals are not reconciled to clearinghouse prints. Reference-window comparisons use the early development interval; the recent 30% is reserved for holdout scoring. Fitted exploratory corrections use earlier matured targets and reject highly collinear inputs. Manual factors are subjective scenarios.
+
+Configurations and generated current forecasts are saved in the current browser and can be exported. Records include their actual creation time. Replay dates do not generate historical forecast records. Background daily generation and cross-device journal storage have not yet been connected to the private collector.
+
+Settlement rules: https://www.balticexchange.com/en/FFAS/How-to-trade-an-FFA/Part-four-Settlement.html
+Publication calendars: https://www.balticexchange.com/en/data-services/market-information0/holidays---non-publications.html
 
 Market Relationships uses a selectable 5, 10 or 20 consecutive-change window (default 10). Each window stays within one contract; N changes require at least N+1 consecutive quotations, and correlation requires variation in both returns. Missing assessments and monthly rolls create genuine gaps. A 20-change window often yields only month-end points in monthly rolling contracts. The volatility chart is the sample standard deviation of daily absolute spread changes, in the quote unit, without annualization. These controls do not alter MA5, MA20 or Bollinger windows.
 

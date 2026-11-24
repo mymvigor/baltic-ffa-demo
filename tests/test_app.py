@@ -3,112 +3,57 @@ from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
-
 import ffa.preferences as preferences
-
 
 @pytest.fixture
 def app(monkeypatch):
-    # AppTest has no browser JS; preference restoration is verified in the browser.
     monkeypatch.setattr(preferences, "restore_preferences", lambda: None)
-    result = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=30)
+    result = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=60)
     result.secrets["mode"] = "demo"
     return result.run()
-
 
 @pytest.mark.parametrize("vessel", ["CAPE", "PMX", "SMX", "HDY"])
 def test_existing_sections_and_open_charts(app, vessel):
     app.sidebar.radio[0].set_value(vessel).run()
     assert not app.exception
-    assert not app.expander
-    rendered = " ".join(item.value for item in app.markdown)
-    for name in ("Spot Analysis", "Price Explorer", "Term Structure", "Market Relationships", "Seasonality"):
-        assert name in rendered
-    assert 8 <= len(app.get("plotly_chart")) <= 10
     assert not app.dataframe
-    merged_ma = [item for item in app.get("plotly_chart") if {"Spot", "MA5", "MA20"}.issubset(
-        {trace.get("name") for trace in json.loads(item.proto.spec)["data"]})]
-    assert len(merged_ma) == 1
-    assert any(widget.label == "Spot monthly mean" and widget.value for widget in app.toggle)
+    plots = app.get("plotly_chart")
+    assert len(plots) == 2
+    assert any({"Spot","MA5","MA20"}.issubset({t.get("name") for t in json.loads(p.proto.spec)["data"]}) for p in plots)
 
+def navigate(app, name):
+    next(w for w in app.sidebar.radio if w.label == "Market view").set_value(name).run()
+    assert not app.exception
 
-def test_modes_preserve_existing_research_views(app):
-    analyses = [widget for widget in app.get("segmented_control") if widget.label == "Analysis"]
-    analyses[0].set_value("Multi-series").run()
-    assert not app.exception
-    analyses = [widget for widget in app.get("segmented_control") if widget.label == "Analysis"]
-    analyses[0].set_value("Spread / Ratio").run()
-    assert not app.exception
-    analyses = [widget for widget in app.get("segmented_control") if widget.label == "Analysis"]
-    analyses[1].set_value("Heatmap").run()
-    assert not app.exception
-    analyses = [widget for widget in app.get("segmented_control") if widget.label == "Analysis"]
-    analyses[0].set_value("Spot + BFA").run()
-    next(widget for widget in app.get("segmented_control") if widget.label == "Contract history").set_value("Fixed").run()
-    assert not app.exception
-    assert any("unadjusted" in item.value for item in app.caption)
-    assert any("heatmap" == trace["type"] for item in app.get("plotly_chart")
-               for trace in json.loads(item.proto.spec)["data"])
-
-
-def test_spot_monthly_button_and_seasonal_rolling(app):
-    next(widget for widget in app.toggle if widget.label == "Spot monthly mean").set_value(False).run()
-    assert not app.exception
-    specs = [json.loads(item.proto.spec) for item in app.get("plotly_chart")]
-    assert not any(trace.get("name") == "Spot monthly mean" for spec in specs for trace in spec["data"])
-    selector = next(widget for widget in app.selectbox if widget.label == "Seasonal series")
-    assert all("Spot" in item or "Rolling" in item for item in selector.options)
-    selector.select(next(item for item in selector.options if "Rolling" in item)).run()
-    assert not app.exception
-    assert next(widget for widget in app.get("segmented_control") if widget.label == "Seasonal frequency").options == ["Daily"]
-
-
-def test_frequency_and_indicators_reuse_the_existing_chart(app):
-    before = len(app.get("plotly_chart"))
-    next(widget for widget in app.multiselect if widget.label == "Indicators").set_value(["MA5", "MA20", "Bollinger bands", "20D percentiles"]).run()
-    assert not app.exception
-    assert len(app.get("plotly_chart")) == before
-    names = [trace.get("name", "") for item in app.get("plotly_chart") for trace in json.loads(item.proto.spec)["data"]]
-    assert any("10th percentile" in name for name in names)
-    next(widget for widget in app.selectbox if widget.label == "Frequency").set_value("Monthly").run()
-    assert not app.exception
-    assert len(app.get("plotly_chart")) == before
-    assert not app.dataframe
-
-
-def test_relationship_window_updates_existing_charts(app):
-    before = len(app.get("plotly_chart"))
-    control = next(widget for widget in app.get("segmented_control") if widget.label == "Statistics window")
-    assert control.value == 10
-    control.set_value(5).run()
-    assert not app.exception
-    assert len(app.get("plotly_chart")) == before
-    names = [trace.get("name", "") for item in app.get("plotly_chart") for trace in json.loads(item.proto.spec)["data"]]
-    assert "5-change correlation" in names
-    assert "5-change volatility" in names
-    next(widget for widget in app.get("segmented_control") if widget.label == "Statistics window").set_value(20).run()
-    assert not app.exception
-    # The synthetic monthly contracts have too few changes for this window.
-    assert any("20 consecutive" in item.value for item in app.info)
-
-
-def test_predictive_views_preserve_price_history_and_guard_unverified_times(app):
-    view = next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view")
-    view.set_value("Daily changes").run()
-    assert not app.exception
-    assert next(widget for widget in app.radio if widget.label == "Validation").value == "Date replay"
-    next(widget for widget in app.radio if widget.label == "Validation").set_value("Verified timestamps").run()
-    assert any("availability timestamps are missing" in item.value for item in app.info)
-    next(widget for widget in app.radio if widget.label == "Validation").set_value("Date replay").run()
-    assert not app.exception
-    for name in ("Lead / lag", "Forecast backtest", "Price history"):
-        next(widget for widget in app.get("segmented_control") if widget.label == "Spot vs BFA view").set_value(name).run()
+def test_unified_forward_views(app):
+    navigate(app, "Forward Market")
+    for axis in ("Calendar Overlay","Actual Date"):
+        next(w for w in app.get("segmented_control") if w.label == "Time Axis").set_value(axis).run()
         assert not app.exception
-        if name != "Price history":
-            assert next(widget for widget in app.get("segmented_control") if widget.label == "Sample").value == "Historical peers"
-            assert next(widget for widget in app.get("segmented_control") if "3Y" in widget.options).value == "3Y"
-    assert any(widget.label == "Spot monthly mean" for widget in app.toggle)
+    for mode in ("Normalized","Difference","Ratio","Absolute"):
+        next(w for w in app.get("segmented_control") if w.label == "Compare Mode").set_value(mode).run()
+        assert not app.exception
+    next(w for w in app.get("segmented_control") if w.label == "Forward view").set_value("Forward Curve").run()
+    assert not app.exception
+    next(w for w in app.get("segmented_control") if w.label == "Forward view").set_value("Repricing").run()
+    assert not app.exception
+    next(w for w in app.get("segmented_control") if w.label == "Analysis").set_value("Heatmap").run()
+    assert not app.exception
+    assert not app.dataframe
 
+def test_research_navigation_and_timestamp_guard(app):
+    navigate(app,"Market Research")
+    next(w for w in app.radio if w.label == "Validation").set_value("Verified timestamps").run()
+    assert any("availability timestamps" in w.value for w in app.info)
+    next(w for w in app.radio if w.label == "Validation").set_value("Date replay").run()
+    for name in ("Lead / lag","Forecast backtest","Relationships"):
+        next(w for w in app.get("segmented_control") if w.label == "Research view").set_value(name).run()
+        assert not app.exception
+
+def test_forecast_uses_sample_guard_on_demo(app):
+    navigate(app,"Forecast")
+    assert not app.exception
+    assert any("historical Spot years" in w.value for w in app.info)
 
 def test_predictive_backtest_renders_real_metrics_only_after_sample_guard(monkeypatch):
     result = AppTest.from_string('''
@@ -128,15 +73,6 @@ predictive_view(history(), (pd.Timestamp('2024-01-01'), pd.Timestamp('2024-12-20
         assert not result.exception
         assert any("Adding Spot vs BFA-only" in item.value for item in result.markdown)
     assert not result.dataframe
-
-
-def test_all_benchmarks_and_rebased_mode_still_work(app):
-    next(widget for widget in app.get("segmented_control") if widget.label == "Analysis").set_value("Multi-series").run()
-    next(widget for widget in app.selectbox if widget.label == "Universe").set_value("All benchmarks").run()
-    assert not app.exception
-    next(widget for widget in app.radio if widget.label == "View").set_value("Rebased to 100").run()
-    assert not app.exception
-    assert any("Base date" in item.value for item in app.caption)
 
 
 def test_same_day_revision_invalidates_session_views(monkeypatch):

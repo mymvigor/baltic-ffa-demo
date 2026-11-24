@@ -7,18 +7,20 @@ from datetime import timedelta
 import pandas as pd
 import streamlit as st
 
-from ffa.analytics import frame, options
+from ffa.analytics import frame
 from ffa.demo import data as demo_data
 from ffa.history import read_history, read_manifest
 from ffa.model import VESSELS
 from ffa.preferences import calendar, choice, multi, persist_preferences, restore_preferences
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
-from ffa.research import calendar_spreads, comparison_studies, comparison_workspace, historical_context, spot_comparison
+from ffa.research import comparison_studies, historical_context
+from ffa.explorer import explorer
+from ffa.settlement_ui import settlement_view
 from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
-from ffa.predictive_ui import VIEWS, predictive_view
+from ffa.predictive_ui import predictive_view
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -218,8 +220,8 @@ def main():
     products = sorted(market_data["product"].unique())
     preferred = default_product(market_data, vessel)
     product = choice("Benchmark", products, f"{vessel}_benchmark", preferred, container=benchmark_area)
-    navigation_area.markdown("[Spot](#spot-analysis)  \n[Price Explorer](#price-explorer)  \n"
-                        "[Term Structure](#term-structure)  \n[Market Relationships](#market-relationships)  \n[Seasonality](#seasonality)")
+    module = choice("Market view", ["Spot Market", "Forward Market", "Forecast", "Market Research"],
+                    "main_market_view", container=navigation_area, control="radio")
     st.markdown(
         f'<div class="ffa-hero"><div class="ffa-kicker">Market monitor / Dry bulk</div>'
         f'<h1 class="ffa-title">{VESSELS[vessel]} · {html.escape(product)}</h1>'
@@ -269,47 +271,25 @@ def main():
 
     @st.fragment
     def spot_panel():
-        section(1, "Spot Analysis", "Trend and trading range: two complementary views of the same Spot benchmark.")
+        section(1, "Spot Market", "Spot trends and seasonal comparisons.")
         key = f"{vessel}_spot_{product}"
-        bounds = assessment_window(first, last, key)
-        if bounds[0] <= bounds[1]:
-            view = inputs(*bounds)
-            spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
-        else:
-            st.info("Choose a start date before the end date.")
-        persist_preferences(key)
-
-    @st.fragment
-    def price_panel():
-        section(2, "Price Explorer", "The single workspace for fixed and rolling price histories, multi-series comparisons and spreads.")
-        key = f"{vessel}_price_{product}"
-        mode = choice("Analysis", ["Spot + BFA", "Multi-series", "Spread / Ratio"], key + "_view",
-                      control="segmented_control", label_visibility="collapsed")
-        study = choice("Spot vs BFA view", VIEWS, key + "_study", "Price history",
-                       control="segmented_control") if mode == "Spot + BFA" else None
-        research = study in ("Lead / lag", "Forecast backtest")
-        bounds = assessment_window(first, last, key + mode + (study if research else ""), research=research)
-        if bounds[0] > bounds[1]:
-            st.info("Choose a start date before the end date.")
-        else:
-            view = inputs(*bounds) if study in (None, "Price history") else None
-            timestamps = tuple(pd.Timestamp(day) for day in bounds)
-            if mode == "Spot + BFA":
-                if study == "Price history":
-                    spot_comparison(view.local, view.days, timestamps, key)
-                else:
-                    # Warm up the selected test window without loading every old archive.
-                    training_start = max(first, bounds[0] - timedelta(days=730)) if research else bounds[0]
-                    complete = inputs(training_start, last)
-                    predictive_view(complete.fixed, timestamps, key + "_predictive", study,
-                                    (stamp, training_start, last))
+        study = choice("Spot view", ["Trend", "Seasonality"], key + "_view", control="segmented_control")
+        if study == "Trend":
+            bounds = assessment_window(first, last, key)
+            if bounds[0] <= bounds[1]:
+                view = inputs(*bounds)
+                spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
             else:
-                basis, calendar_studies = comparison_studies(view.local, view.days)
-                def universe():
-                    complete = inputs(*bounds, wide=True)
-                    return options(complete.fixed, complete.rolling)
-                comparison_workspace(universe, view.local, basis, calendar_studies,
-                                     timestamps, key + mode, mode == "Spread / Ratio")
+                st.info("Choose a start date before the end date.")
+        else:
+            available = sorted({int(y) for y in archive.get("years", []) if first.year <= int(y) <= last.year}
+                               | set(observed_days.dt.year), reverse=True)
+            years = multi("Compare years", available, key+"_years", available[:5], len(available))
+            if years:
+                start = max(first, pd.Timestamp(min(years), 1, 1).date())
+                end = min(last, pd.Timestamp(max(years), 12, 31).date())
+                view = inputs(start, end, seasonal=True)
+                seasonality(view.local, view.days, years, key, spot_only=True)
         persist_preferences(key)
 
     @st.fragment
@@ -354,44 +334,64 @@ def main():
         persist_preferences(key)
 
     @st.fragment
-    def calendar_panel():
-        key = f"{vessel}_term_{product}"
-        bounds = assessment_window(first, last, key + "Rolling")
-        if bounds[0] > bounds[1]:
-            st.info("Choose a start date before the end date.")
+    def forward_panel():
+        section(2, "Forward Market", "Compare prices, spreads and forward curves.")
+        key = f"{vessel}_forward_{product}"
+        study = choice("Forward view", ["Price Explorer", "Forward Curve", "Repricing"], key+"_view",
+                       control="segmented_control")
+        if study == "Price Explorer":
+            bounds = assessment_window(first, last, key)
+            if bounds[0] <= bounds[1]:
+                explorer(inputs, tuple(pd.Timestamp(day) for day in bounds), first, last, key)
+            else:
+                st.info("Choose a start date before the end date.")
+        elif study == "Forward Curve":
+            curve_panel()
         else:
-            view = inputs(*bounds)
-            timestamps = tuple(pd.Timestamp(day) for day in bounds)
-            st.caption("Rolling prices are unadjusted. Lines break at rolls; diamonds show the roll date. "
-                       "Daily MA5 / MA20 and bands restart within each confirmed delivery contract.")
-            studies = calendar_spreads(view.local, view.days, timestamps, key)
-            basis, _ = comparison_studies(view.local, view.days)
-            section(4, "Market Relationships", "Correlation and change volatility add context without repeating the price charts above.")
-            historical_context(view.local, view.days, basis, studies, timestamps, key)
+            changes_panel()
         persist_preferences(key)
 
     @st.fragment
-    def seasonal_panel():
-        section(5, "Seasonality", "Compare the same Spot benchmark or rolling tenor across calendar years.")
-        key = f"{vessel}_seasonal_{product}"
-        available = sorted({int(year) for year in archive.get("years", []) if int(year) <= last.year}
-                           | set(observed_days.dt.year), reverse=True)
-        years = multi("Compare years", available, key + "_years", available[:5], len(available))
-        if years:
-            start, end = pd.Timestamp(min(years), 1, 1).date(), min(pd.Timestamp(max(years), 12, 31).date(), last)
-            view = inputs(start, end, seasonal=True)
-            seasonality(view.local, view.days, years, key)
-        else:
-            st.info("Select at least one year.")
+    def forecast_panel():
+        section(3, "Forecast", "Estimate settlement and compare it with a matching BFA.")
+        key = f"{vessel}_settlement_{product}"
+        # Load enough history for five analogues and chronological validation.
+        start = max(first, last.replace(year=last.year-12, month=1, day=1))
+        with st.spinner("Loading settlement history…"):
+            view = inputs(start, last, seasonal=True)
+        settlement_view(view.fixed, stamp, vessel, product, key, synthetic=not live)
         persist_preferences(key)
 
-    spot_panel()
-    price_panel()
-    section(3, "Term Structure", "The forward curve, repricing and calendar spread explain the shape across deliveries.")
-    curve_panel()
-    changes_panel()
-    calendar_panel()
-    seasonal_panel()
+    @st.fragment
+    def research_panel():
+        section(4, "Market Research", "Short-horizon BFA moves and market relationships.")
+        key = f"{vessel}_research_{product}"
+        study = choice("Research view", ["Daily changes", "Lead / lag", "Forecast backtest", "Relationships"],
+                       key+"_view", control="segmented_control")
+        long_history = study in ("Lead / lag", "Forecast backtest")
+        bounds = assessment_window(first, last, key+study, research=long_history)
+        if bounds[0] > bounds[1]:
+            st.info("Choose a start date before the end date.")
+        else:
+            start = max(first, bounds[0] - timedelta(days=730)) if long_history else bounds[0]
+            view = inputs(start, last if study != "Relationships" else bounds[1])
+            timestamps = tuple(pd.Timestamp(day) for day in bounds)
+            if study == "Relationships":
+                basis, spreads = comparison_studies(view.local, view.days)
+                historical_context(view.local, view.days, basis, spreads, timestamps, key)
+            else:
+                predictive_view(view.fixed, timestamps, key+"_predictive", study, (stamp, start, last))
+        persist_preferences(key)
+
+    if module == "Spot Market":
+        spot_panel()
+    elif module == "Forward Market":
+        forward_panel()
+    elif module == "Forecast":
+        forecast_panel()
+    else:
+        research_panel()
+    persist_preferences("global")
 
 
 if __name__ == "__main__":

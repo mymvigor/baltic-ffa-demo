@@ -55,14 +55,14 @@ def spot_analysis(local, days, bounds, key):
     bollinger_history({"Spot": [("Spot", data, "price")]}, bounds, unit, key + "_standalone", compact=True)
 
 
-def seasonality(local, days, years, key):
-    choices = [leg for leg in local if leg[2] == "Spot" or leg[6] == "Rolling"]
+def seasonality(local, days, years, key, spot_only=False):
+    choices = [leg for leg in local if leg[2] == "Spot" or (not spot_only and leg[6] == "Rolling")]
     if not choices or not years:
         st.info("Select years with Spot or Rolling assessments.")
         return
     choices.sort(key=lambda leg: (leg[2] != "Spot", leg[5] != "month", local[leg][0]))
     leg = choice("Seasonal series", choices, key + "_series",
-                 format_func=lambda item: f"{series_name(item, local)} · {'Spot' if item[2] == 'Spot' else 'Rolling'} · {unit_label(*item[3:5])}")
+                 format_func=lambda item: f"{series_name(item, local)} · {'Spot' if item[2] == 'Spot' else 'Rolling'} · {unit_label(*item[3:5])}") if len(choices) > 1 else choices[0]
     frequency = choice("Seasonal frequency", ["Daily", "Monthly mean"] if leg[2] == "Spot" else ["Daily"],
                        key + str(leg) + "_frequency", control="segmented_control")
     source = local[leg][1]

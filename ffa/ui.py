@@ -48,7 +48,7 @@ def display(fig, key):
 
 def date_axis(fig, bounds):
     padding = pd.Timedelta(hours=12)
-    fig.update_layout(hovermode="closest")
+    fig.update_layout(hovermode="closest", dragmode="pan")
     fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding],
                      hoverformat="%d %b %Y", nticks=7, showspikes=True, spikedash="dot",
                      spikecolor="#9caebc", spikemode="across", spikesnap="hovered data")
