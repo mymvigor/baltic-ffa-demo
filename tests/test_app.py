@@ -79,6 +79,42 @@ multi("Years", options, "dynamic_years", options[:1], len(options))
     assert not result.exception
     assert result.multiselect[0].value == [2024]
 
+
+def test_exploratory_price_and_difference_curves_update_with_strength():
+    import base64
+    import numpy as np
+    result = AppTest.from_string('''
+import streamlit as st
+import pandas as pd
+from ffa.settlement_ui import _trajectory
+strength = st.number_input("Judgement strength", 0., 1., .3, .1)
+daily = pd.DataFrame(dict(date=pd.to_datetime(["2026-11-09","2026-11-10"]),
+    Difference=[20000.,21000.], Ratio=[20100.,21100.], BFA=[19000.,19500.], Actual=float("nan"),
+    remaining_Difference=[20000.,24000.], remaining_weight=[1.,.5]))
+settings = dict(leg="2026-12", factors=[], weights={}, judgement="Bearish", strength=strength,
+                maximum_pct=10., custom_adjustment=0.)
+_trajectory(daily, "test_journal", settings, "Difference", "Exploratory Model", "Manual", "scenario_test")
+''', default_timeout=15).run()
+
+    def curve(name):
+        spec = json.loads(result.get('plotly_chart')[0].proto.spec)
+        values = next(trace['y'] for trace in spec['data'] if trace['name'] == name)
+        if isinstance(values, dict):
+            return np.frombuffer(base64.b64decode(values['bdata']), dtype=values['dtype'])
+        return np.asarray(values)
+
+    assert not result.exception
+    assert curve('Exploratory scenario') == pytest.approx([19400.,20640.])
+    result.number_input[0].set_value(.6).run()
+    assert not result.exception
+    assert curve('Exploratory scenario') == pytest.approx([18800.,20280.])
+    assert curve('Difference') == pytest.approx([20000.,21000.])
+    next(w for w in result.get('segmented_control') if w.label == 'Chart mode').set_value('Difference').run()
+    assert curve('Exploratory scenario') == pytest.approx([-200.,780.])
+    result.number_input[0].set_value(.9).run()
+    assert not result.exception
+    assert curve('Exploratory scenario') == pytest.approx([-800.,420.])
+
 def test_predictive_backtest_renders_real_metrics_only_after_sample_guard(monkeypatch):
     result = AppTest.from_string('''
 import pandas as pd

@@ -160,6 +160,25 @@ def subjective_adjustment(prediction, base, direction, strength, maximum_pct):
     return sign * strength * maximum_pct / 100 * abs(prediction["remaining"][base]) * prediction["multiplier"]
 
 
+def scenario_forecasts(daily, base, direction, strength, maximum_pct, factors=(), weights=(),
+                       custom_adjustment=0., method="Manual", fit=None):
+    """Apply today's assumptions to each base snapshot, never as a backtest."""
+    sign = {"Bearish": -1., "Neutral": 0., "Bullish": 1.}[direction]
+    multiplier = daily.remaining_weight
+    correction = pd.Series(0., index=daily.index)
+    if factors:
+        inputs = daily[list(factors)].to_numpy(float)
+        if method == "Manual":
+            correction = pd.Series(inputs @ np.asarray(weights), index=daily.index)
+        elif fit is not None:
+            center, scale, coefficients = fit
+            correction = pd.Series(((inputs-center)/scale) @ coefficients, index=daily.index)
+        else:
+            return pd.Series(np.nan, index=daily.index)
+    subjective = sign * strength * maximum_pct / 100 * daily["remaining_"+base].abs()
+    return daily[base] + (correction + custom_adjustment + subjective) * multiplier
+
+
 def eligible_years(spot, issue):
     history = spot.loc[:issue]
     years = []
@@ -203,7 +222,9 @@ def daily_forecasts(quotes, contract, target, asof, years, window=20, custom=Non
             cutoff = date.tz_localize("UTC") + pd.Timedelta(days=1)
             observed = observed[pd.to_datetime(observed.available_at, utc=True, errors="coerce").lt(cutoff)]
         row = dict(date=date, BFA=float(observed.price.iloc[-1]) if not observed.empty else np.nan,
-                   Actual=np.nan if actual is None else actual, **prediction["values"])
+                   Actual=np.nan if actual is None else actual, **prediction["values"], **prediction["factors"],
+                   remaining_weight=prediction["multiplier"],
+                   **{"remaining_"+name: prediction["remaining"][name] for name in BASIC})
         if factors:
             x = np.asarray([prediction["factors"][factor] for factor in factors])
             row["correction"] = float(x @ np.asarray(weights)) * prediction["multiplier"]

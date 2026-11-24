@@ -10,7 +10,7 @@ import streamlit as st
 from .analytics import delivery_label
 from .preferences import calendar, choice, encode, multi, toggle
 from .settlement import (BASIC, FACTORS, SUPPORTED, WINDOWS, bfa_history, eligible_years, exploratory_replay, fit_adjustment,
-                         daily_forecasts, forecast, metrics, replay, spot_history, subjective_adjustment)
+                         daily_forecasts, forecast, metrics, replay, scenario_forecasts, spot_history, subjective_adjustment)
 from .ui import COLORS, chart, date_axis, display
 
 MIN_TEST = 12
@@ -23,8 +23,8 @@ def _replay(revision, scope, issue, month, windows, offsets, custom, strict, bas
 
 
 @st.cache_data(max_entries=12, show_spinner=False)
-def _daily(revision, scope, contract, month, issue, years, window, custom, strict, factors, weights, basis, _quotes):
-    return daily_forecasts(_quotes, contract, month, issue, years, window, custom, strict, factors, weights, basis)
+def _daily(revision, scope, contract, month, issue, years, window, custom, strict, basis, _quotes):
+    return daily_forecasts(_quotes, contract, month, issue, years, window, custom, strict, basis=basis)
 
 
 def _log(key, config, month, issue, value, bfa, model, observed_through, revision):
@@ -199,6 +199,8 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
             st.caption("Optional quantitative factors use existing data. Highly overlapping factors can overfit.")
         signed_pct = {"Bearish": -1, "Neutral": 0, "Bullish": 1}[judgement] * strength * maximum_pct
         st.caption(f"Subjective scenario: {judgement.lower()} · remaining-price adjustment {signed_pct:+.1f}% (strength {strength:.1f} × maximum {maximum_pct:g}%). Strength is not a probability or an estimated coefficient.")
+        if judgement == "Neutral":
+            st.caption("Neutral keeps the subjective adjustment at zero. Choose Bearish or Bullish to apply judgement strength.")
     settings = dict(contract=contract, leg=str(month), basis=basis, window=window, years=list(years), base=selected, method=method,
                     judgement=judgement, strength=strength, maximum_pct=maximum_pct, judgement_note=judgement_note,
                     factors=[name for name, (_, field) in FACTORS.items() if field in factors], weights=dict(zip(factors, weights)),
@@ -217,6 +219,7 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     active = rows[rows.window.eq(str(window))].dropna(subset=[*BASIC, "Spot", "BFA", "Actual"]).sort_values("date") if not rows.empty else rows
     price = value["values"][selected]
     coefficients = None
+    current_fit = None
     if model == "Exploratory Model":
         inputs = np.asarray([value["factors"][factor] for factor in factors])
         if requires_fit:
@@ -229,6 +232,7 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
                 price = np.nan
             else:
                 center, scale, coef = fit
+                current_fit = fit
                 price += ((inputs-center)/scale @ coef) * value["multiplier"]
                 coefficients = "; ".join(f"{name}: {weight:+.2f}" for name, weight in zip(factors, coef/scale))
         elif np.isfinite(inputs).all():
@@ -271,22 +275,28 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     if chart_view == "Daily forecast":
         with st.spinner("Calculating daily forecast history…"):
             daily = _daily(revision, scope, contract, month, chart_asof, tuple(years), window, custom, strict,
-                           tuple(factors) if method == "Manual" else (), tuple(weights), basis, quotes)
+                           basis, quotes)
         _trajectory(daily, journal, settings, selected, model, method,
-                    bool(custom_factor.strip()) or judgement != "Neutral", state)
+                    state, current_fit)
     else:
+        if model == "Exploratory Model":
+            st.info("Historical validation excludes today's subjective judgement. Select Daily forecast to see the current exploratory scenario and its price difference.")
         _validation(rows, active, model, selected, factors, method, weights, strict, price-bfa, state, chart_view)
 
 
-def _trajectory(daily, journal, settings, selected, model, method, subjective, key):
+def _trajectory(daily, journal, settings, selected, model, method, key, current_fit=None):
     if daily.empty:
         st.info("No eligible daily forecasts for this contract and data mode.")
         return
     daily = daily.copy()
     labels = list(BASIC)
-    if model == "Exploratory Model" and method == "Manual" and not subjective:
-        daily["Exploratory"] = daily[selected] + daily.get("correction", 0.)
-        labels = ["Exploratory", selected]
+    if model == "Exploratory Model":
+        factors = tuple(FACTORS[name][1] for name in settings["factors"])
+        weights = tuple(settings["weights"].get(field, 0.) for field in factors)
+        daily["Exploratory scenario"] = scenario_forecasts(
+            daily, selected, settings["judgement"], settings["strength"], settings["maximum_pct"],
+            factors, weights, settings["custom_adjustment"], method, current_fit)
+        labels = ["Exploratory scenario", selected]
     log = st.session_state.get("_ffa_preferences", {}).get(sha256(journal.encode()).hexdigest()[:12], {})
     version = sha256(json.dumps(encode(settings), sort_keys=True).encode()).hexdigest()[:12]
     records = [r for r in log.get("forecasts", {}).values()
@@ -311,7 +321,8 @@ def _trajectory(daily, journal, settings, selected, model, method, subjective, k
         values = daily[name] if mode == "Forecast vs Actual" else daily[name]-daily[column]
         if values.notna().any():
             fig.add_scatter(x=daily.date, y=values, name=name, mode="lines+markers",
-                            line_color=COLORS[i], marker_size=3, connectgaps=False)
+                            line=dict(color=COLORS[i], dash="dash" if name == "Exploratory scenario" else "solid"),
+                            marker_size=3, connectgaps=False)
     if mode == "Forecast vs Actual" and daily[column].notna().any():
         fig.add_scatter(x=daily.date, y=daily[column], mode="lines+markers",
                         name="Actual settlement (reconstructed)" if column == "Actual" else "BFA",
@@ -329,9 +340,9 @@ def _trajectory(daily, journal, settings, selected, model, method, subjective, k
         st.markdown("**Daily settlement forecasts · fixed target contract**")
     _trajectory_axis(fig, daily)
     display(fig, key+"_daily_forecast")
-    st.caption("Each date predicts the same settlement month. Curves are reconstructed with the current settings using data eligible on each date; diamonds are forecasts actually generated and saved in this browser.")
-    if model == "Exploratory Model" and (method != "Manual" or subjective):
-        st.caption("Estimated or subjective exploratory forecasts appear only as saved diamonds. No historical coefficients or subjective observations are invented; the base-model curve remains visible.")
+    st.caption("Each date targets the same settlement month. Base curves use reference observations eligible on each date; diamonds are forecasts actually generated and saved in this browser.")
+    if model == "Exploratory Model":
+        st.caption("Exploratory scenario applies today's judgement, weights and any current fitted coefficients to each base snapshot. This is a hypothetical sensitivity curve, not historical predictions or out-of-sample performance. Saved diamonds retain the forecasts actually generated.")
     if column == "BFA":
         st.caption("BFA is the observed forward price, not final settlement. Forecast minus same-day BFA is a pricing gap, not a realized forecast error. Missing BFA quotes remain gaps.")
     if not daily.Actual.notna().any():

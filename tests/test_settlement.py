@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from ffa.settlement import bfa_history, daily_forecasts, forecast, sessions, shift_year, eligible_years, subjective_adjustment
+from ffa.settlement import bfa_history, daily_forecasts, forecast, sessions, shift_year, eligible_years, scenario_forecasts, subjective_adjustment
 from ffa.explorer import compare_prices
 
 
@@ -108,3 +108,16 @@ def test_subjective_strength_is_explicit_and_only_changes_remaining_settlement()
         assert subjective_adjustment(value,'Difference','Neutral',.3,10.) == 0.
         with pytest.raises(ValueError):
             subjective_adjustment(value,'Difference','Bearish',1.3,10.)
+
+
+def test_scenario_curve_responds_to_strength_and_keeps_observed_sessions_fixed():
+    daily = pd.DataFrame({'Difference':[20000.,21000.,22000.],
+                          'remaining_Difference':[20000.,24000.,22000.],
+                          'remaining_weight':[1.,.5,0.], 'trend':[100.,200.,300.]})
+    mild = scenario_forecasts(daily,'Difference','Bearish',.3,10.)
+    strong = scenario_forecasts(daily,'Difference','Bearish',.6,10.)
+    assert mild.tolist() == pytest.approx([19400.,20640.,22000.])
+    assert strong.tolist() == pytest.approx([18800.,20280.,22000.])
+    assert scenario_forecasts(daily,'Difference','Neutral',.6,10.).tolist() == daily.Difference.tolist()
+    adjusted = scenario_forecasts(daily,'Difference','Bearish',.3,10.,('trend',),(2.,),100.)
+    assert adjusted.tolist() == pytest.approx([19700.,20890.,22000.])
