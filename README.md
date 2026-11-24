@@ -2,11 +2,11 @@
 
 Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic data. Live mode uses a private GitHub repository. Configure the GitHub read credential in Streamlit Secrets.
 
-The page loads one of four modules at a time, with global vessel and benchmark selection:
+All four modules appear on one page, with global vessel and benchmark selection:
 
-1. **Spot Market:** Spot / MA5 / MA20, Bollinger bands and Spot seasonality.
-2. **Forward Market:** one Price Explorer for prices, normalization, differences, ratios and calendar overlays, plus Forward Curve and Repricing views.
-3. **Forecast:** monthly settlement Difference and Ratio models, independently configured exploratory corrections and chronological validation.
+1. **Forecast:** monthly settlement Difference and Ratio models, independently configured exploratory corrections and chronological validation. The current forecast chart appears by default; historical charts calculate on demand.
+2. **Spot Market:** Spot / MA5 / MA20, Bollinger bands and Spot seasonality.
+3. **Forward Market:** one Price Explorer for prices, normalization, differences, ratios and calendar overlays, plus Forward Curve and Repricing views.
 4. **Market Research:** daily changes, lead/lag, short-horizon BFA validation and relationships.
 
 Charts use the full content width without data tables. Selected views load on demand.
@@ -32,7 +32,7 @@ Run `python -m pytest -q` for synthetic calculation, history-cache and Streamlit
 
 ## Spot → BFA validation
 
-Price Explorer → Spot + BFA now switches between the existing price history, daily absolute changes (USD/day), lead/lag research, and forecast backtests. The research views keep each fixed contract separate; only one benchmark/quote unit is allowed. All charts remain full-width, with no added data tables. Long training history loads only when a research view is selected and is cached by exact source revisions and scope.
+Market Research switches between daily absolute changes (USD/day), lead/lag research, forecast backtests and relationships. The research views keep each fixed contract separate; only one benchmark/quote unit is allowed. All charts remain full-width, with no added data tables. Long research training history loads only when required and is cached by exact source revisions and scope.
 
 Research defaults to clearly labelled **Date replay**, **Historical peers**, **M+1** and a **3Y** window, so the initial view has useful validation coverage. Select **Selected contract** to inspect one fixed delivery separately. **Verified timestamps** and contract type are available in **Research settings**; methodology is under **Method notes**. Price-history defaults are unchanged. Small-sample thresholds and leakage controls are unchanged.
 

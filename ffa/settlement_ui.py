@@ -170,11 +170,8 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     windows = tuple(w for w in WINDOWS if w != "Custom" or custom)
     offsets = tuple(issue.year - year for year in years)
     scope = (vessel, benchmark, len(quotes))
-    run_key = state + "_run"
-    validation_key = (revision, scope, str(issue), str(month), windows, offsets, custom, strict)
-    if st.button("Run validation", key=run_key):
-        st.session_state[run_key+"_request"] = validation_key
-    requested = st.session_state.get(run_key+"_request") == validation_key
+    chart_view = choice("Forecast chart", ("Current forecast", *VALIDATION_VIEWS), state + "_chart_view")
+    requested = chart_view != "Current forecast"
     requires_fit = model == "Exploratory Model" and method != "Manual" and bool(factors)
     rows = pd.DataFrame()
     if requested or requires_fit:
@@ -220,11 +217,23 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
             st.caption(coefficients)
     if not synthetic:
         _log(journal, settings, month, issue, price, bfa, model, latest, revision)
-    if requested:
-        _validation(rows, active, model, selected, factors, method, weights, strict, price-bfa, state)
+    if chart_view == "Current forecast":
+        estimates = {name: value["values"][name] for name in BASIC}
+        if model == "Exploratory Model":
+            estimates["Exploratory"] = price
+        estimates = {name: estimate for name, estimate in estimates.items() if np.isfinite(estimate)}
+        fig = chart("Settlement estimate · USD/day", height=360)
+        fig.add_bar(x=list(estimates), y=list(estimates.values()), marker_color=COLORS[:len(estimates)],
+                    text=[f"{estimate:,.0f}" for estimate in estimates.values()], textposition="outside")
+        if pd.notna(bfa):
+            fig.add_hline(y=float(bfa), line_dash="dash", line_color=COLORS[3], annotation_text="Current BFA")
+        display(fig, state + "_current_forecast")
+        st.caption(f"{month} settlement estimates. Select a historical chart to calculate cached validation results.")
+    else:
+        _validation(rows, active, model, selected, factors, method, weights, strict, price-bfa, state, chart_view)
 
 
-def _validation(rows, active, model, selected, factors, method, weights, strict, gap, key):
+def _validation(rows, active, model, selected, factors, method, weights, strict, gap, key, view):
     if active.empty:
         st.info("No matched historical observations. In verified mode the archive must include usable quote vintages.")
         return
@@ -255,7 +264,6 @@ def _validation(rows, active, model, selected, factors, method, weights, strict,
             st.caption(f"Same-case MAE change vs base: {base_mae-summary.mae:+,.0f} USD/day. Fixed manual choices are a scenario; do not tune them on this holdout.")
     if pd.notna(gap):
         st.caption(f"Current absolute gap is {abs(gap)/max(summary.mae, .01):.1f}× historical MAE. This is a scale comparison, not a significance test.")
-    view = choice("Validation chart", VALIDATION_VIEWS, key+"_chart")
     fig = chart("USD/day", height=365)
     if view == "Model Comparison":
         fig.add_bar(x=stats.model, y=stats.mae, marker_color=COLORS[:len(stats)])
@@ -265,7 +273,7 @@ def _validation(rows, active, model, selected, factors, method, weights, strict,
         common = cases[cases.eq(rows.window.nunique())].index
         same_cases = same_cases[same_cases.delivery.isin(common)]
         if len(common) < MIN_TEST:
-            st.info("Too few common holdout months across all reference windows.")
+            st.info("Too few common development-period months across all reference windows.")
             return
         for name, color in zip(BASIC, COLORS):
             error = (same_cases[name]-same_cases.Actual).abs().groupby(same_cases.window).mean().reindex([str(w) for w in WINDOWS]).dropna()

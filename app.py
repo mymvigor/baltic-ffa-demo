@@ -164,7 +164,6 @@ def main():
         st.caption("DRY FREIGHT RESEARCH")
         vessel = choice("Vessel class", VESSELS, "vessel", "PMX", control="radio", format_func=VESSELS.get)
         benchmark_area = st.container()
-        navigation_area = st.container()
         if live:
             dispatch_token = st.secrets.get("github_actions_token")
             if dispatch_token:
@@ -220,8 +219,6 @@ def main():
     products = sorted(market_data["product"].unique())
     preferred = default_product(market_data, vessel)
     product = choice("Benchmark", products, f"{vessel}_benchmark", preferred, container=benchmark_area)
-    module = choice("Market view", ["Spot Market", "Forward Market", "Forecast", "Market Research"],
-                    "main_market_view", container=navigation_area, control="radio")
     st.markdown(
         f'<div class="ffa-hero"><div class="ffa-kicker">Market monitor / Dry bulk</div>'
         f'<h1 class="ffa-title">{VESSELS[vessel]} · {html.escape(product)}</h1>'
@@ -271,7 +268,7 @@ def main():
 
     @st.fragment
     def spot_panel():
-        section(1, "Spot Market", "Spot trends and seasonal comparisons.")
+        section(2, "Spot Market", "Spot trends and seasonal comparisons.")
         key = f"{vessel}_spot_{product}"
         study = choice("Spot view", ["Trend", "Seasonality"], key + "_view", control="segmented_control")
         if study == "Trend":
@@ -289,7 +286,8 @@ def main():
                 start = max(first, pd.Timestamp(min(years), 1, 1).date())
                 end = min(last, pd.Timestamp(max(years), 12, 31).date())
                 view = inputs(start, end, seasonal=True)
-                seasonality(view.local, view.days, years, key, spot_only=True)
+                spot_series = {leg: source for leg, source in view.local.items() if leg[2] == "Spot"}
+                seasonality(spot_series, view.days, years, key)
         persist_preferences(key)
 
     @st.fragment
@@ -335,7 +333,7 @@ def main():
 
     @st.fragment
     def forward_panel():
-        section(2, "Forward Market", "Compare prices, spreads and forward curves.")
+        section(3, "Forward Market", "Compare prices, spreads and forward curves.")
         key = f"{vessel}_forward_{product}"
         study = choice("Forward view", ["Price Explorer", "Forward Curve", "Repricing"], key+"_view",
                        control="segmented_control")
@@ -353,7 +351,7 @@ def main():
 
     @st.fragment
     def forecast_panel():
-        section(3, "Forecast", "Estimate settlement and compare it with a matching BFA.")
+        section(1, "Forecast", "Estimate settlement and compare it with a matching BFA.")
         key = f"{vessel}_settlement_{product}"
         # Load enough history for five analogues and chronological validation.
         start = max(first, last.replace(year=last.year-12, month=1, day=1))
@@ -383,14 +381,10 @@ def main():
                 predictive_view(view.fixed, timestamps, key+"_predictive", study, (stamp, start, last))
         persist_preferences(key)
 
-    if module == "Spot Market":
-        spot_panel()
-    elif module == "Forward Market":
-        forward_panel()
-    elif module == "Forecast":
-        forecast_panel()
-    else:
-        research_panel()
+    forecast_panel()
+    spot_panel()
+    forward_panel()
+    research_panel()
     persist_preferences("global")
 
 

@@ -27,12 +27,12 @@ _browser_memory = component(
 def restore_preferences():
     memory = st.session_state.setdefault("_ffa_preferences", {})
     loaded = st.session_state.get("_ffa_browser_loaded", False)
-    result = _browser_memory(
-        data=memory if loaded else None, key="ffa_browser_memory",
-        default={"saved": None}, on_saved_change=lambda: None, height=0,
-    )
     if loaded:
         return
+    result = _browser_memory(
+        data=None, key="ffa_browser_memory",
+        default={"saved": None}, on_saved_change=lambda: None, height=0,
+    )
     saved = result.saved
     # Render defaults while browser storage is loading. The component callback
     # reruns the page when the saved setting arrives.
@@ -86,10 +86,14 @@ def _remember(key, default, decode, render):
 
 
 def encode(value):
+    if isinstance(value, dict):
+        return {str(key): encode(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [encode(item) for item in value]
     if hasattr(value, "isoformat"):
         return value.isoformat()
+    if hasattr(value, "item"):
+        return encode(value.item())
     return value
 
 

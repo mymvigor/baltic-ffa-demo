@@ -18,11 +18,14 @@ def test_existing_sections_and_open_charts(app, vessel):
     assert not app.exception
     assert not app.dataframe
     plots = app.get("plotly_chart")
-    assert len(plots) == 2
+    assert len(plots) >= 4
+    rendered = " ".join(item.value for item in app.markdown)
+    positions = [rendered.index(name) for name in ("Forecast</h2>", "Spot Market</h2>", "Forward Market</h2>", "Market Research</h2>")]
+    assert positions == sorted(positions)
+    assert not any(w.label == "Market view" for w in app.sidebar.radio)
     assert any({"Spot","MA5","MA20"}.issubset({t.get("name") for t in json.loads(p.proto.spec)["data"]}) for p in plots)
 
 def navigate(app, name):
-    next(w for w in app.sidebar.radio if w.label == "Market view").set_value(name).run()
     assert not app.exception
 
 def test_unified_forward_views(app):
@@ -54,6 +57,12 @@ def test_forecast_uses_sample_guard_on_demo(app):
     navigate(app,"Forecast")
     assert not app.exception
     assert any("historical Spot years" in w.value for w in app.info)
+
+def test_browser_settings_accept_numpy_years():
+    import numpy as np
+    from ffa.preferences import encode
+    raw = {"years": [np.int64(2026), np.int32(2025)], "flag": np.bool_(True)}
+    assert json.loads(json.dumps(encode(raw))) == {"years": [2026, 2025], "flag": True}
 
 def test_predictive_backtest_renders_real_metrics_only_after_sample_guard(monkeypatch):
     result = AppTest.from_string('''
