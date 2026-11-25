@@ -21,6 +21,7 @@ from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
 from ffa.predictive_ui import predictive_view
+from ffa.outlook_ui import outlook_view
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -351,13 +352,18 @@ def main():
 
     @st.fragment
     def forecast_panel():
-        section(1, "Forecast", "Estimate settlement and compare it with a matching BFA.")
-        key = f"{vessel}_settlement_{product}"
-        # Load enough history for five analogues and chronological validation.
-        start = max(first, last.replace(year=last.year-12, month=1, day=1))
-        with st.spinner("Loading settlement history…"):
+        section(1, "Forecast", "Future BFA quotation paths and separate contract settlement models.")
+        target = choice("Forecast target", ["BFA price path", "Contract settlement"],
+                        f"{vessel}_{product}_forecast_target", control="segmented_control")
+        key = f"{vessel}_bfa_path_{product}" if target == "BFA price path" else f"{vessel}_settlement_{product}"
+        start = max(first, last.replace(year=last.year-(3 if target == "BFA price path" else 12), month=1, day=1))
+        with st.spinner("Loading forecast data…"):
             view = inputs(start, last, seasonal=True)
-        settlement_view(view.fixed, stamp, vessel, product, key, synthetic=not live)
+        if target == "BFA price path":
+            outlook_view(view.fixed, stamp, vessel, product, key, synthetic=not live,
+                         repo=repo, credential_id=credential_id, token=token)
+        else:
+            settlement_view(view.fixed, stamp, vessel, product, key, synthetic=not live)
         persist_preferences(key)
 
     @st.fragment
