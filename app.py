@@ -356,7 +356,7 @@ def main():
         target = choice("Forecast target", ["BFA price path", "Contract settlement"],
                         f"{vessel}_{product}_forecast_target", control="segmented_control")
         key = f"{vessel}_bfa_path_{product}" if target == "BFA price path" else f"{vessel}_settlement_{product}"
-        start = max(first, last.replace(year=last.year-(3 if target == "BFA price path" else 12), month=1, day=1))
+        start = max(first,last.replace(year=last.year-(8 if target == "BFA price path" else 12),month=1,day=1))
         with st.spinner("Loading forecast data…"):
             view = inputs(start, last, seasonal=True)
         if target == "BFA price path":

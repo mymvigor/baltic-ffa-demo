@@ -26,6 +26,15 @@ def market_fixture(asof='2026-11-23'):
                              delivery_start=expiry.replace(day=1) if kind=='BFA' else None,
                              delivery_end=expiry if kind=='BFA' else None, price=20000.+i*10,
                              received_at=(day.tz_localize('UTC')+pd.Timedelta(hours=16)).isoformat()))
+    for lag in range(1,6):
+        end = expiry-pd.DateOffset(years=lag)
+        start = end.replace(day=1)
+        historical_days = pd.bdate_range(days.min()-pd.DateOffset(years=lag),end)
+        for i,day in enumerate(historical_days):
+            price = 11000.+lag*400+day.month*65+day.day*9+np.sin(i/8)*90
+            rows.append(dict(identity=f"fixed-{lag}",quote_day=day,vessel="PMX",product="TEST",kind="BFA",
+                currency="USD",unit="day",tenor="month",delivery_start=start,delivery_end=end,price=price,
+                received_at=(day.tz_localize("UTC")+pd.Timedelta(hours=16)).isoformat()))
     return frame(rows)
 
 
@@ -37,7 +46,10 @@ def test_mean_path_covers_entire_fixed_contract_and_uses_only_past_quotes():
     assert path.target_date.min() > cutoff
     assert path.target_date.max() <= info['expiry']
     observed = fixed[fixed.identity.eq('fixed') & fixed.quote_day.le(cutoff)].price.tail(20)
-    assert path.forecast.eq(observed.mean()).all()
+    assert path.forecast.nunique() > 5
+    np.testing.assert_allclose(path.forecast,path.historical_mean+observed.mean()-path.historical_reference)
+    assert len(info['reference_years']) == 5
+    assert info['historical_reference'] != info['level']
     changed = fixed.copy()
     changed.loc[changed.quote_day.gt(cutoff),'price'] = 1e8
     after, _ = forecast_path(changed,'fixed',asof=cutoff)
@@ -45,7 +57,7 @@ def test_mean_path_covers_entire_fixed_contract_and_uses_only_past_quotes():
     missing = fixed[~(fixed.identity.eq('fixed') & fixed.quote_day.eq('2026-11-06'))]
     result, _ = forecast_path(missing,'fixed',asof=cutoff)
     expected = missing[missing.identity.eq('fixed') & missing.quote_day.le(cutoff)].price.tail(20).mean()
-    assert result.forecast.eq(expected).all()
+    np.testing.assert_allclose(result.forecast,result.historical_mean+expected-result.historical_reference)
 
 
 def test_subjective_path_changes_future_only_and_expires():
@@ -58,6 +70,31 @@ def test_subjective_path_changes_future_only_and_expires():
     np.testing.assert_allclose(adjusted[path.target_date.gt('2026-12-10')],path.loc[path.target_date.gt('2026-12-10'),'forecast'])
     config['strength'] = .6
     assert apply_judgement(path,config)[0] < adjusted[0]
+
+
+def test_seasonal_curve_is_historical_prices_plus_the_reference_mean_difference():
+    fixed=market_fixture('2026-11-23')
+    config={**DEFAULTS,'years':[2025]}
+    path,_=forecast_path(fixed,'fixed',config)
+    current=fixed[fixed.identity.eq('fixed')].sort_values('quote_day')
+    prior=fixed[fixed.identity.eq('fixed-1')].sort_values('quote_day')
+    a=current.price.tail(20).mean()
+    b=prior[prior.quote_day.le('2025-11-23')].price.tail(20).mean()
+    for day in ('2026-12-01','2026-12-10'):
+        historical=pd.Timestamp(day)-pd.DateOffset(years=1)
+        c=prior.loc[prior.quote_day.eq(historical),'price'].iloc[0]
+        predicted=path.loc[path.target_date.eq(day),'forecast'].iloc[0]
+        assert predicted == pytest.approx(c+a-b)
+    shifted=fixed.copy()
+    shifted.loc[shifted.identity.eq('fixed'),'price'] += 500.
+    higher,_=forecast_path(shifted,'fixed',config)
+    np.testing.assert_allclose(higher.forecast,path.forecast+500.,equal_nan=True)
+    changed=fixed.copy()
+    changed.loc[changed.identity.eq('fixed-1') & changed.quote_day.eq('2025-12-10'),'price'] += 100.
+    revised,_=forecast_path(changed,'fixed',config)
+    assert revised.loc[revised.target_date.eq('2026-12-10'),'forecast'].iloc[0] == pytest.approx(path.loc[path.target_date.eq('2026-12-10'),'forecast'].iloc[0]+100.)
+    unavailable,_=forecast_path(fixed,'fixed',{**DEFAULTS,'years':[2026]})
+    assert unavailable.empty
 
 
 def test_issued_path_has_genuine_creation_time_and_future_targets_only():
@@ -152,18 +189,18 @@ outlook_view(fixed, ("test",), "PMX", "TEST", "future_test", synthetic=True)
 ''',default_timeout=30).run()
     assert not result.exception
     spec=json.loads(result.get('plotly_chart')[0].proto.spec)
-    assert any(trace.get('name') == 'Future mean forecast' for trace in spec['data'])
+    assert any(trace.get('name') == 'Seasonal difference forecast' for trace in spec['data'])
     next(w for w in result.get('segmented_control') if w.label=='BFA path').set_value('Exploratory scenario').run()
     next(w for w in result.get('segmented_control') if w.label=='Market judgement').set_value('Bearish').run()
     assert not result.exception
     def values(name):
         spec=json.loads(result.get('plotly_chart')[0].proto.spec)
         return next(trace['y'] for trace in spec['data'] if trace.get('name')==name)
-    base=values('Future mean forecast')
+    base=values('Seasonal difference forecast')
     before=values('Exploratory scenario')
     result.number_input[0].set_value(.6).run()
     assert not result.exception
-    assert values('Future mean forecast') == base
+    assert values('Seasonal difference forecast') == base
     assert values('Exploratory scenario') != before
     next(w for w in result.get('segmented_control') if w.label=='Forecast view').set_value('Saved forecast review').run()
     assert not result.exception
