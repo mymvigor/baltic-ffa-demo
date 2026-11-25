@@ -56,7 +56,7 @@ def date_axis(fig, bounds):
     fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding],
                      hoverformat="%d %b %Y", nticks=7, showspikes=True, spikedash="dot",
                      spikecolor="#9caebc", spikemode="across", spikesnap="hovered data",
-                     rangeslider=dict(visible=True,thickness=.12))
+                     rangeslider=dict(visible=True,thickness=.065,bgcolor="#edf2f6",bordercolor="#c9d6df",borderwidth=1))
 
 
 def series_name(key, series, full=False):
@@ -360,7 +360,7 @@ def forward_series(data, tenor):
 
 
 def as_of(days, target):
-    return next((day for day in days if day <= target), None)
+    return max((day for day in days if day <= target),default=None)
 
 
 def curves(data, market, tenor, targets, key):

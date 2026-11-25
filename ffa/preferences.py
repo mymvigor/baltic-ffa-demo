@@ -148,6 +148,12 @@ def toggle(label, key, default=False, *, container=st):
     )
 
 
+def number(label,key,default,minimum,maximum,step):
+    return _remember(key,default,
+        lambda raw,fallback:float(raw) if isinstance(raw,(int,float)) and minimum<=raw<=maximum else fallback,
+        lambda value,widget_key,save:st.number_input(label,float(minimum),float(maximum),step=float(step),key=widget_key,on_change=save))
+
+
 def calendar(label, key, default, earliest, latest, *, container=st):
     from datetime import date
 

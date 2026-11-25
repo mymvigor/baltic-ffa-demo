@@ -172,7 +172,10 @@ def explorer(load, bounds, first, last, key):
             elif fixed_overlay:
                 delivery_year=candidates[leg][1].delivery_start.iloc[0].year
                 shift=pd.DateOffset(years=2000-delivery_year)
-                data.index=pd.DatetimeIndex(data.index)+shift
+                original_dates=pd.DatetimeIndex(data.index)
+                mapped=original_dates+shift
+                leap=(original_dates.month==2)&(original_dates.day==29)&~mapped.is_leap_year
+                data.index=mapped+pd.to_timedelta(leap.astype(int)*12,unit="h")
                 rolls.index=pd.DatetimeIndex(rolls.index)+shift
             elif overlay:
                 data=seasonal(data).set_index("season_day")

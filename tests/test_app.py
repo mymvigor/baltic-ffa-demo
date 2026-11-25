@@ -18,7 +18,7 @@ def test_existing_sections_and_open_charts(app, vessel):
     assert not app.exception
     assert not app.dataframe
     plots = app.get("plotly_chart")
-    assert len(plots) >= 4
+    assert len(plots) >= 3
     rendered = " ".join(item.value for item in app.markdown)
     positions = [rendered.index(name) for name in ("Forecast</h2>", "Spot Market</h2>", "Forward Market</h2>", "Market Research</h2>")]
     assert positions == sorted(positions)

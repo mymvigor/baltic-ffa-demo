@@ -39,6 +39,8 @@ STYLE = """
 }
 [data-testid="stPlotlyChart"] {background:#fff; border:0; border-radius:13px;
     padding:0; box-shadow:0 0 0 1px #dfe7ef, 0 2px 10px rgba(19, 41, 65, .04);}
+/* Keep Plotly's native double-ended drag behaviour without a miniature chart. */
+[data-testid="stPlotlyChart"] .rangeslider-rangeplot {visibility:hidden;}
 [data-testid="stSidebarContent"] {border-right: 1px solid #e2e9ef;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: #516478;}
 [data-testid="stMetricValue"] {font-size:clamp(1rem,2.1vw,1.8rem);}
@@ -85,8 +87,8 @@ def default_product(data, vessel):
 def assessment_window(first, last, key, research=False):
     periods = ({"1Y": 365, "3Y": 1095, "All": None, "Custom": None} if research else
                {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "All": None, "Custom": None})
-    with st.popover("History settings"):
-        preset = choice("History", periods, key + "_window", "3Y" if research else "3M", control="segmented_control")
+    with st.popover("Date range"):
+        preset = choice("Range", periods, key + "_window", "3Y" if research else "3M", control="segmented_control")
         if preset != "Custom":
             duration = periods[preset]
             return (max(first, last - timedelta(days=duration)) if duration else first, last)
@@ -304,9 +306,9 @@ def main():
         current_last=panel_last("spot")
         study = choice("Spot view", ["Trend", "Seasonality"], key + "_view", control="segmented_control")
         if study == "Trend":
-            bounds = assessment_window(first,current_last,key)
+            bounds = (first,current_last)
             if bounds[0] <= bounds[1]:
-                view = inputs(*bounds,module="spot")
+                view = inputs(*bounds,seasonal=True,module="spot")
                 spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
             else:
                 st.info("Choose a start date before the end date.")
@@ -387,7 +389,7 @@ def main():
         target=choice("Forecast target",["Spot Forecast","BFA Forecast"],f"{vessel}_{product}_forecast_target",control="segmented_control")
         kind="Spot" if target=="Spot Forecast" else "BFA"
         key=f"{vessel}_bfa_path_{product}" if kind=="BFA" else f"{vessel}_spot_forecast_{product}"
-        start=max(first,last.replace(year=last.year-8,month=1,day=1))
+        start=first
         with st.spinner("Loading forecast data…"):
             view=inputs(start,current_last,seasonal=True,module="forecast")
         unified_forecast(view.fixed,(stamp,refresh_version),vessel,product,key,kind,synthetic=not live,repo=repo,credential_id=credential_id,token=token)

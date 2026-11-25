@@ -199,18 +199,13 @@ def _future_chart(rows, future, info, mode, model, baseline, overlays, key):
     history = rows[rows.quote_day.ge(info["asof"]-pd.Timedelta(days=90))]
     offset = info["latest"] if difference else 0
     fig.add_scatter(x=history.quote_day, y=history.price-offset, name="Actual Spot" if info.get("target_kind")=="Spot" else "Actual BFA", mode="lines", line_color=COLORS[3])
-    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
-    connect_current = info["asof"].normalize() == today
-    x = [info["asof"], *future.target_date] if connect_current else list(future.target_date)
+    x = list(future.target_date)
     for column, name, color in [("forecast",info.get("config",{}).get("model","Seasonal forecast")+" forecast",COLORS[0]),("scenario","Exploratory scenario",COLORS[1])]:
         if column == "scenario" and model != "Exploratory scenario":
             continue
-        y = [info["latest"]-offset, *(future[column]-offset)] if connect_current else future[column]-offset
+        y = future[column]-offset
         details = future[["historical_mean","historical_reference","historical_n"]].to_numpy()
-        if connect_current:
-            details = np.vstack([[np.nan,np.nan,0],details])
         memberships=list(future.get("historical_years",pd.Series("",index=future.index)))
-        if connect_current:memberships=["",*memberships]
         xx,yy,dd=[],[],[]
         for i,(date,value,detail) in enumerate(zip(x,y,details)):
             if i and memberships[i]!=memberships[i-1]:
