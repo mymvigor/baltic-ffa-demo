@@ -63,8 +63,8 @@ def seasonality(local, days, years, key, spot_only=False):
     choices.sort(key=lambda leg: (leg[2] != "Spot", leg[5] != "month", local[leg][0]))
     leg = choice("Seasonal series", choices, key + "_series",
                  format_func=lambda item: f"{series_name(item, local)} · {'Spot' if item[2] == 'Spot' else 'Rolling'} · {unit_label(*item[3:5])}") if len(choices) > 1 else choices[0]
-    frequency = choice("Seasonal frequency", ["Daily", "Monthly mean"] if leg[2] == "Spot" else ["Daily"],
-                       key + str(leg) + "_frequency", control="segmented_control")
+    frequency = choice("Seasonal frequency", ["Daily", "Monthly mean"],
+                       key + str(leg) + "_frequency", control="segmented_control") if leg[2]=="Spot" else "Daily"
     source = local[leg][1]
     full = timeline(source, days)
     if frequency == "Monthly mean":
@@ -93,6 +93,8 @@ def seasonality(local, days, years, key, spot_only=False):
         coverage.append({"Year": year, "First assessment": f"{actual.quote_day.min():%d %b %Y}",
                          "Last assessment": f"{actual.quote_day.max():%d %b %Y}", "Assessments": len(actual)})
     if fig.data:
+        date_axis(fig,(pd.Timestamp("2000-01-01"),pd.Timestamp("2000-12-31")))
+        fig.update_xaxes(tickformat="%b",dtick="M1")
         display(fig, key + "_seasonality")
     else:
         st.info("No assessments for this series in the selected years.")

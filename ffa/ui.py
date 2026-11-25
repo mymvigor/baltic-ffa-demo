@@ -7,6 +7,7 @@ import streamlit as st
 from .analytics import delivery_label, indicators, percentiles, period_means, snapshots, timeline, unit_label
 from .model import VESSELS
 from .preferences import choice, multi, toggle
+from .selection import contract_label
 
 COLORS = ["#177b81", "#3a59a6", "#b67132", "#784ea4", "#52845b", "#a74f6a"]
 DASHES = ["solid", "dash", "dot", "dashdot"]
@@ -40,6 +41,9 @@ def chart(y, height=310):
 
 
 def display(fig, key):
+    if fig.layout.xaxis.type == "date":
+        extent=fig.layout.xaxis.range
+        fig.update_layout(uirevision=f"{key}:{extent}")
     st.plotly_chart(
         fig, theme=None, width="stretch", key=key,
         config={"displaylogo": False, "responsive": True, "modeBarButtonsToRemove": ["toImage", "lasso2d", "select2d"]},
@@ -48,14 +52,15 @@ def display(fig, key):
 
 def date_axis(fig, bounds):
     padding = pd.Timedelta(hours=12)
-    fig.update_layout(hovermode="closest", dragmode="pan")
+    fig.update_layout(hovermode="closest",dragmode="pan",height=max(fig.layout.height or 310,400),margin=dict(b=80))
     fig.update_xaxes(type="date", range=[bounds[0] - padding, bounds[1] + padding],
                      hoverformat="%d %b %Y", nticks=7, showspikes=True, spikedash="dot",
-                     spikecolor="#9caebc", spikemode="across", spikesnap="hovered data")
+                     spikecolor="#9caebc", spikemode="across", spikesnap="hovered data",
+                     rangeslider=dict(visible=True,thickness=.12))
 
 
 def series_name(key, series, full=False):
-    name = series[key][0]
+    name = contract_label(series[key][1].iloc[0]) if key[2]=="BFA" and key[6]=="Fixed" else series[key][0]
     if full:
         return f"{VESSELS[key[0]]} · {key[1]} · {name}"
     return name

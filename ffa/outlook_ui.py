@@ -209,10 +209,17 @@ def _future_chart(rows, future, info, mode, model, baseline, overlays, key):
         details = future[["historical_mean","historical_reference","historical_n"]].to_numpy()
         if connect_current:
             details = np.vstack([[np.nan,np.nan,0],details])
-        fig.add_scatter(x=x, y=y, name=name, mode="lines",
+        memberships=list(future.get("historical_years",pd.Series("",index=future.index)))
+        if connect_current:memberships=["",*memberships]
+        xx,yy,dd=[],[],[]
+        for i,(date,value,detail) in enumerate(zip(x,y,details)):
+            if i and memberships[i]!=memberships[i-1]:
+                xx.append(None);yy.append(None);dd.append([None,None,None,""])
+            xx.append(date);yy.append(value);dd.append([*detail,memberships[i]])
+        fig.add_scatter(x=xx,y=yy,name=name,mode="lines+markers",marker_size=3,
                         line=dict(color=color,dash="dash"),connectgaps=False,
-                        customdata=details,
-                        hovertemplate="%{x|%d %b %Y}<br>%{y:,.0f} USD/day<br>Historical price %{customdata[0]:,.0f}<br>Historical reference %{customdata[1]:,.0f}<br>Matched years %{customdata[2]:.0f}<extra>%{fullData.name}</extra>")
+                        customdata=dd,
+                        hovertemplate="%{x|%d %b %Y}<br>%{y:,.0f} USD/day<br>Historical price %{customdata[0]:,.0f}<br>Historical reference %{customdata[1]:,.0f}<br>Matched years %{customdata[2]:.0f}: %{customdata[3]}<extra>%{fullData.name}</extra>")
     if baseline:
         fig.add_scatter(x=future.target_date, y=future.unchanged-offset, name="Unchanged baseline", mode="lines", line=dict(color=COLORS[4], dash="dot"))
     for record in overlays:

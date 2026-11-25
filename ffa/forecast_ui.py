@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from .analytics import delivery_label
+from .selection import contract_choice
 from .outlook import DEFAULTS, forecast_path, apply_judgement, prediction_record, replay_current, forecast_score, evaluated_record
 from .outlook_ui import _memory, _records, _future_chart
 from .forecast_store import save_records, activate_configuration
@@ -33,11 +34,13 @@ def unified_forecast(fixed,stamp,vessel,product,key,kind,synthetic=False,repo=No
         st.info("No compatible quotes available.");return
     latest=current.quote_day.max()
     if kind=="BFA":
-        contracts=current[current.delivery_end.gt(today)].drop_duplicates("identity",keep="last").sort_values("delivery_start")
+        contracts=current.drop_duplicates("identity",keep="last").sort_values("delivery_start")
         if contracts.empty:
-            st.info("No active fixed contracts.");return
+            st.info("No fixed contracts available.");return
         labels={r.identity:f"{delivery_label(r.tenor,r.delivery_start)} · {r.tenor}" for r in contracts.itertuples()}
-        contract=choice("Target contract",labels,key+"_contract",format_func=labels.get)
+        ready=contracts[contracts.tenor.eq("month") & contracts.delivery_start.gt(latest)]
+        preferred=ready.identity.iloc[0] if not ready.empty else contracts.identity.iloc[-1]
+        contract=contract_choice("Target contract",contracts,key+"_contract",preferred)
         expiry=contracts.set_index("identity").loc[contract].delivery_end
         current=current[current.identity.eq(contract)]
         latest=current.quote_day.max()
@@ -54,18 +57,34 @@ def unified_forecast(fixed,stamp,vessel,product,key,kind,synthetic=False,repo=No
         config.update(custom=[str(a),str(b)],window=max(1,int(current.quote_day.between(pd.Timestamp(a),pd.Timestamp(b)).sum())))
     else:
         config["window"]=window
-    end=calendar("Forecast through",state+"_end",(today+pd.DateOffset(months=3)).date() if kind=="Spot" else expiry.date(),today.date(),expiry.date())
+    end=calendar("Forecast through",state+"_end",(today+pd.DateOffset(months=3)).date() if kind=="Spot" else expiry.date(),min(today,expiry).date(),expiry.date())
     config["forecast_end"]=str(end)
+    config["year_anchor"]=latest.year
     with st.popover("Advanced Settings"):
         config["weighting"]=choice("Reference weighting",["Equal weighted","Recent weighted"],state+"_weight")
         if kind=="BFA":
             config["pooled"]=choice("Validation sample",["Historical peers","Selected contract"],state+"_sample")=="Historical peers"
+        config["year_mode"]=choice("Reference year policy",["Rolling years","Fixed years"],state+"_year_mode")
+        st.caption("Rolling years preserves selected year lags at each past origin and uses only available past years. Fixed years keeps the named calendar years and excludes years not yet known.")
         partition=choice("Evaluation partition",["Holdout","Development"],state+"_partition")
         timing=choice("Historical data",["Historical Replay","Verified timestamps"],state+"_timing")
         st.caption("Historical Replay cannot verify archived publication times or revisions. Strict mode rejects undated observations. Repeated parameter exploration is not an untouched final test.")
+        st.caption("Each forecast point pairs historical prices and reference means from the same available years. Missing years are not filled; contributor changes break the plotted line.")
+    view=choice("Chart view",["Future Forecast","Forecast vs Actual","Forecast Error","Forecast Evolution"],state+"_view",control="segmented_control")
+    mode=choice("Review data",["Historical Replay","Saved Forecasts"],state+"_review_mode",control="segmented_control") if view!="Future Forecast" else "Historical Replay"
+    saved_mode=mode=="Saved Forecasts"
     stamp=(stamp,len(fixed),kind)
     basic_json=json.dumps(config,sort_keys=True)
     path,info=_projection(stamp,contract,basic_json,fixed)
+    if path.empty and saved_mode:
+        saved=_records(key,contract,repo,credential_id,token)
+        horizon=None if view=="Forecast Evolution" else choice("Evaluation Horizon",[1,5,10,20,60],state+"_horizon",20,control="segmented_control")
+        target=None
+        if view=="Forecast Evolution" and saved:
+            dates=[pd.Timestamp(p["target_date"]).date() for record in saved.values() for p in record["points"]]
+            target=calendar("Evolution Target Date",state+"_target_day",max(dates),min(dates),max(dates))
+        _review_chart(fixed,pd.DataFrame(),saved,view,state,config,kind,contract,horizon,target)
+        return
     if path.empty:
         st.info(info.get("reason","Insufficient history."));return
     years=multi("Reference Years",info["candidate_years"],state+"_years",info["reference_years"],len(info["candidate_years"]))
@@ -89,46 +108,59 @@ def unified_forecast(fixed,stamp,vessel,product,key,kind,synthetic=False,repo=No
             config.update(judgement_from=str(today.date()),judgement_until=str(deadline),fade=True)
         st.caption("Subjective adjustments change the future scenario only. They are excluded from historical scores; saved forecasts provide prospective evaluation.")
     path["scenario"]=apply_judgement(path,config)
-    view=choice("Chart view",["Future Forecast","Forecast vs Actual","Forecast Error","Forecast Evolution"],state+"_view",control="segmented_control")
-    mode=choice("Review data",["Historical Replay","Saved Forecasts"],state+"_review_mode",control="segmented_control") if view!="Future Forecast" else "Historical Replay"
-    saved_mode=mode=="Saved Forecasts"
-    horizon=choice("Evaluation Horizon",[1,5,10,20,60],state+"_horizon",20,control="segmented_control",format_func=lambda n:f"{n}D")
+    horizon=None if view=="Forecast Evolution" else choice("Evaluation Horizon",[1,5,10,20,60],state+"_horizon",20,control="segmented_control",format_func=lambda n:f"{n}D")
     replay=pd.DataFrame()
-    if not saved_mode:
+    if not saved_mode and view!="Forecast Evolution":
         with st.spinner("Updating validation for the current parameters…"):
             replay=_replay(stamp,contract,basic_json,horizon,timing=="Verified timestamps",fixed)
         if not replay.empty:
-            cutoff=sorted(replay.date.unique())[int(replay.date.nunique()*.7)]
+            calendar_days=sorted(fixed.quote_day.unique())[-1500:]
+            cutoff=pd.Timestamp(calendar_days[int(len(calendar_days)*.7)])
             replay=replay[replay.date.ge(cutoff)] if partition=="Holdout" else replay[replay.target_date.lt(cutoff)]
-        score=forecast_score(replay)
+        st.caption(f"{timing} · {partition}. Unknown historical vintages cannot establish a verified predictive edge.")
+        score=forecast_score(replay,min_samples=3)
         cols=st.columns(4)
         cols[0].metric("Direction Accuracy",f"{score['direction']:.1%}" if np.isfinite(score['direction']) else "—")
         cols[1].metric("Forecast Skill Score",f"{score['skill']:+.1f}%" if np.isfinite(score['skill']) else "—")
         cols[2].metric("MAE",f"{score['mae']:,.0f}" if np.isfinite(score['mae']) else "—")
         cols[3].metric("Samples",score['samples'])
         if score['samples']<10:
-            st.caption("Fewer than 10 non-overlapping cases. No reliable score or ranking is reported.")
+            st.caption("Fewer than 10 non-overlapping cases: any displayed metrics are LOW-CONFIDENCE descriptive estimates only; no ranking or predictive advantage is established.")
         else:
             st.caption("Historical error beats unchanged price." if score['skill']>0 else "This sample does not establish a price advantage over unchanged price.")
             with st.popover("Score details"):
                 st.caption(f"Out-of-sample R² {score['r2']:.2f}; Bias {score['bias']:+,.0f}; momentum MAE {score['momentum_mae']:,.0f}; past-majority direction accuracy {score['majority_accuracy']:.1%}. Flat is a separate direction. Scores describe exploration, not trading returns.")
     formula="C(t) + A − B" if model=="Difference" else "C(t) × A / B"
-    st.caption(f"{formula} · A {info['level']:,.0f} · B {info['historical_reference']:,.0f}. The same historical-year cohort is required at every point; absent matches remain gaps.")
+    st.caption(f"{formula} · A {info['level']:,.0f} · B {info['historical_reference']:,.0f} · Inputs through {info['asof']:%d %b %Y}.")
+    valid_points=path.forecast.notna().sum()
+    st.caption(f"Reference years: {', '.join(map(str,info['reference_years']))} · {valid_points}/{len(path)} valid forecast dates. Hover shows contributors.")
+    if (today-info['asof']).days>7:
+        st.warning("Inputs are over seven calendar days old. This forecast uses stale quotes.")
     record=prediction_record(path,info,contract,config,info["source_revision"])
     if record and not synthetic:
         record=_memory(key).setdefault(record["id"],encode(record))
     if view=="Future Forecast":
         future=path[path.target_date.gt(today)]
-        if not future.empty:
+        if future.empty or not future.forecast.notna().any():
+            st.info(f"No valid future points after {today:%d %b %Y}. Latest quote: {info['asof']:%d %b %Y}; requested end: {end}. Extend the range or inspect historical coverage.")
+        else:
             actual=current[current.identity.eq(contract)] if kind=="BFA" else current
             _future_chart(actual,future,info,"Price path","Exploratory scenario" if exploratory else "Basic",False,[],state)
     else:
         saved=_records(key,contract,repo,credential_id,token) if mode=="Saved Forecasts" else None
-        if view=="Forecast Evolution" and mode=="Historical Replay":
-            target=calendar("Evolution target date",state+"_target_day",end,current.quote_day.min().date(),end)
-            with st.spinner("Replaying forecasts for the selected target…"):
-                replay=_evolution(stamp,contract,basic_json,str(target),timing=="Verified timestamps",fixed)
-        _review_chart(fixed,replay,saved,view,state,config,kind,contract,horizon)
+        target=None
+        if view=="Forecast Evolution":
+            low=current.quote_day.min().date();high=end
+            if saved:
+                target_days=[pd.Timestamp(p["target_date"]).date() for record in saved.values() for p in record["points"]]
+                if target_days:low,high=min(target_days),max(target_days)
+            default_target=min(high,(today+pd.offsets.BDay(5)).date())
+            default_target=max(low,default_target)
+            target=calendar("Evolution Target Date",state+"_target_day",default_target,low,high)
+            if mode=="Historical Replay":
+                with st.spinner("Replaying each past origin for this target, independently of Evaluation Horizon…"):
+                    replay=_evolution(stamp,contract,basic_json,str(target),timing=="Verified timestamps",fixed)
+        _review_chart(fixed,replay,saved,view,state,config,kind,contract,horizon,target)
     if kind=="Spot":
         _settlement(fixed,path,info,state)
     if not synthetic and record:
@@ -149,13 +181,13 @@ def _evolution(stamp,contract,config,target,strict,_fixed):
     return replay_current(_fixed,contract,json.loads(config),1,strict,target)
 
 
-def _review_chart(fixed,replay,saved,view,key,config,kind,contract,horizon):
+def _review_chart(fixed,replay,saved,view,key,config,kind,contract,horizon,target=None):
     rows=replay.copy()
     if saved is not None:
         if not saved:
             st.info("No actual issued records exist for this selection. No replay is substituted.");return
         ids=sorted(saved,key=lambda i:saved[i]["created_at"],reverse=True)
-        chosen=multi("Saved versions",ids,key+"_versions",ids[:1],min(10,len(ids)),format_func=lambda i:saved[i]["created_at"][:16]+" · "+saved[i]["config"].get("model","")+" · "+i[:6])
+        chosen=multi("Saved versions",ids,key+"_versions",ids[:10] if view=="Forecast Evolution" else ids[:1],min(10,len(ids)),format_func=lambda i:saved[i]["created_at"][:16]+" · "+saved[i]["config"].get("model","")+" · "+i[:6])
         batches=[]
         for identity in chosen:
             record=saved[identity];batch=evaluated_record(record,fixed)
@@ -166,25 +198,23 @@ def _review_chart(fixed,replay,saved,view,key,config,kind,contract,horizon):
             batches.append(batch)
         rows=pd.concat(batches,ignore_index=True) if batches else pd.DataFrame()
     elif replay.empty:
-        st.info("No eligible forecast review cases.");return
+        st.info("No eligible replay cases: check reference-year policy, target date within contract lifetime, matured outcomes, and publication timestamps in strict mode. Fixed-year selections can be unavailable at early origins.");return
     if rows.empty:
         st.info("No recorded forecasts selected.");return
-    if saved is not None:
+    if saved is not None and view!="Forecast Evolution":
         scored=rows[rows.horizon.eq(horizon)].dropna(subset=["actual","forecast"]).sort_values("date").drop_duplicates("date",keep="last")
         keep=[];until=pd.Timestamp.min
         for idx,row in scored.iterrows():
             if row.date>=until:keep.append(idx);until=row.target_date
-        stats=forecast_score(scored.loc[keep])
+        stats=forecast_score(scored.loc[keep],min_samples=3)
         cols=st.columns(4)
         for col,label,value in zip(cols,["Direction Accuracy","Forecast Skill Score","MAE","Samples"],[f"{stats['direction']:.1%}" if np.isfinite(stats['direction']) else "—",f"{stats['skill']:+.1f}%" if np.isfinite(stats['skill']) else "—",f"{stats['mae']:,.0f}" if np.isfinite(stats['mae']) else "—",stats['samples']]):col.metric(label,value)
         st.caption("Scores use only selected issued versions with observed outcomes and non-overlapping target intervals. No current parameters are reapplied.")
     fig=chart("USD/day",height=440)
     if view=="Forecast Evolution":
-        low,high=rows.target_date.min().date(),rows.target_date.max().date()
-        target=calendar("Target date",key+"_evolution_date",high,low,high)
         selected=rows[rows.target_date.eq(pd.Timestamp(target))].sort_values("date")
         if selected.empty:
-            st.info("No forecasts for that target date.");return
+            st.info("No eligible predictions for this target date. Check that it follows the prediction origins, is within the fixed contract lifetime, and has historical seasonal coverage; strict mode additionally requires publication timestamps.");return
         fig.add_scatter(x=selected.date,y=selected.forecast,name="Forecast evolution",mode="lines+markers")
         actual=selected.actual.dropna()
         if len(actual):fig.add_hline(y=float(actual.iloc[-1]),line_dash="dot")

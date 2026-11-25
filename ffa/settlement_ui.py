@@ -351,11 +351,10 @@ def _trajectory(daily, journal, settings, selected, model, method, key, current_
 
 def _trajectory_axis(fig, daily):
     date_axis(fig, (daily.date.min(), daily.date.max()))
-    # Keep range buttons above the plot and the wrapping legend below the date
-    # labels. Sharing the top band caused overlap, especially on narrow screens.
-    fig.update_layout(height=440, margin=dict(t=58, b=92),
-                      legend=dict(x=0, xanchor="left", y=-.22, yanchor="top"))
-    fig.update_xaxes(rangeselector=dict(x=0, xanchor="left", y=1.05, yanchor="bottom",
+    # Separate the legend and range buttons; reserve the bottom for the slider.
+    fig.update_layout(height=480, margin=dict(t=100, b=75),
+                      legend=dict(x=0, xanchor="left", y=1.22, yanchor="bottom"))
+    fig.update_xaxes(rangeselector=dict(x=0, xanchor="left", y=1.02, yanchor="bottom",
         buttons=[dict(count=n, label=label, step=step, stepmode="backward")
         for n, label, step in [(1, "1M", "month"), (3, "3M", "month"), (6, "6M", "month"), (1, "1Y", "year")]]
         + [dict(label="All", step="all")]))

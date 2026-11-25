@@ -16,12 +16,10 @@ from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.research import comparison_studies, historical_context
 from ffa.explorer import explorer
-from ffa.settlement_ui import settlement_view
 from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
 from ffa.predictive_ui import predictive_view
-from ffa.outlook_ui import outlook_view
 from ffa.forecast_ui import unified_forecast
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
@@ -35,7 +33,7 @@ BENCHMARKS = {
 
 STYLE = """
 <style>
-[data-testid="stMainBlockContainer"] {max-width: 1360px; padding: 2rem clamp(1.25rem, 3.25vw, 3.5rem) 4rem;}
+[data-testid="stMainBlockContainer"] {max-width: 100%; padding: 2rem clamp(1.25rem, 3.25vw, 3.5rem) 4rem;}
 @media (min-width: 768px) {
     [data-testid="stSidebar"][aria-expanded="true"] { width: 216px !important; min-width: 216px !important; }
 }
@@ -87,14 +85,15 @@ def default_product(data, vessel):
 def assessment_window(first, last, key, research=False):
     periods = ({"1Y": 365, "3Y": 1095, "All": None, "Custom": None} if research else
                {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "All": None, "Custom": None})
-    preset = choice("History", periods, key + "_window", "3Y" if research else "3M", control="segmented_control")
-    if preset != "Custom":
-        duration = periods[preset]
-        return (max(first, last - timedelta(days=duration)) if duration else first, last)
-    left, right = st.columns(2)
-    start = calendar("From", key + "_start", max(first, last - timedelta(days=90)), first, last, container=left)
-    end = calendar("To", key + "_end", last, first, last, container=right)
-    return start, end
+    with st.popover("History settings"):
+        preset = choice("History", periods, key + "_window", "3Y" if research else "3M", control="segmented_control")
+        if preset != "Custom":
+            duration = periods[preset]
+            return (max(first, last - timedelta(days=duration)) if duration else first, last)
+        left, right = st.columns(2)
+        start = calendar("From", key + "_start", max(first, last - timedelta(days=90)), first, last, container=left)
+        end = calendar("To", key + "_end", last, first, last, container=right)
+        return start, end
 
 
 def show_status(status, vessel, live, fallback):
@@ -117,7 +116,7 @@ def show_status(status, vessel, live, fallback):
 def refresh_control(repo, token):
     pending = st.session_state.get("_baltic_refresh")
     if pending is None:
-        if st.button("Refresh", help="Fetch the latest Baltic assessments through GitHub Actions."):
+        if st.button("Sync market data", help="Fetch the latest Baltic assessments through GitHub Actions."):
             try:
                 run = start_refresh(repo, token)
             except Exception as exc:
@@ -135,7 +134,7 @@ def refresh_control(repo, token):
     @st.fragment(run_every="15s")
     def progress():
         run, started = pending
-        st.button("Refresh", disabled=True, key="refresh_in_progress")
+        st.button("Sync market data", disabled=True, key="refresh_in_progress")
         st.caption("Waiting for Baltic sync…")
         try:
             result = refresh_conclusion(repo, token, run)
@@ -171,7 +170,7 @@ def main():
             if dispatch_token:
                 refresh_control(st.secrets["github_repo"], dispatch_token)
             else:
-                st.button("Reload saved data", on_click=read_live.clear)
+                st.caption("Section Refresh buttons reload saved quotes.")
                 st.caption("Baltic sync is not configured for this app.")
 
     archive = {}
@@ -246,7 +245,8 @@ def main():
                       format_func=TENORS.get) if available else None
 
     def latest_forward(tenor):
-        observed = market_data[market_data["product"].eq(product) & market_data.kind.eq("BFA") & market_data.tenor.eq(tenor)]
+        source=module_workspace("forward").fixed
+        observed=source[source.vessel.eq(vessel)&source["product"].eq(product)&source.kind.eq("BFA")&source.tenor.eq(tenor)]
         return observed.quote_day.max().date() if not observed.empty else last
 
     def load_window(start, end, scope_vessel, scope_product):
@@ -265,18 +265,48 @@ def main():
             missing.attrs["history_unavailable"] = True
             return missing
 
-    def inputs(start, end, *, wide=False, seasonal=False):
-        return workspace.view(vessel, product, start, end, load_window, wide=wide, seasonal=seasonal)
+    def module_workspace(module):
+        saved=st.session_state.get("_panel_workspace_"+module)
+        return saved[1] if saved and saved[0]==stamp else workspace
+
+    def panel_refresh(module):
+        counter="_panel_refresh_"+module
+        if st.button("Refresh",key=module+"_local_refresh",help="Reload saved quotes and recompute this module only. No collection task is started."):
+            try:
+                with st.spinner("Reloading saved quotes…"):
+                    if live:
+                        read_live.clear(repo,credential_id,token)
+                        fresh=read_live(repo,credential_id,token)
+                    else:
+                        fresh=read_demo()
+                count=st.session_state.get(counter,0)+1
+                st.session_state[counter]=count
+                scoped=MarketWorkspace(fresh[0],fresh[1],(stamp,count),revision,max_views=12)
+                st.session_state["_panel_workspace_"+module]=(stamp,scoped)
+            except Exception:
+                st.warning("Could not reload saved quotes. Current data and selections are retained.")
+        return st.session_state.get(counter,0)
+
+    def panel_last(module):
+        rows=module_workspace(module).fixed
+        rows=rows[rows.vessel.eq(vessel)&rows["product"].eq(product)]
+        return rows.quote_day.max().date() if not rows.empty else last
+
+    def inputs(start,end,*,wide=False,seasonal=False,module=None):
+        source=module_workspace(module) if module else workspace
+        return source.view(vessel,product,start,end,load_window,wide=wide,seasonal=seasonal)
 
     @st.fragment
     def spot_panel():
         section(2, "Spot Market", "Spot trends and seasonal comparisons.")
         key = f"{vessel}_spot_{product}"
+        panel_refresh("spot")
+        current_last=panel_last("spot")
         study = choice("Spot view", ["Trend", "Seasonality"], key + "_view", control="segmented_control")
         if study == "Trend":
-            bounds = assessment_window(first, last, key)
+            bounds = assessment_window(first,current_last,key)
             if bounds[0] <= bounds[1]:
-                view = inputs(*bounds)
+                view = inputs(*bounds,module="spot")
                 spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
             else:
                 st.info("Choose a start date before the end date.")
@@ -287,7 +317,7 @@ def main():
             if years:
                 start = max(first, pd.Timestamp(min(years), 1, 1).date())
                 end = min(last, pd.Timestamp(max(years), 12, 31).date())
-                view = inputs(start, end, seasonal=True)
+                view = inputs(start,end,seasonal=True,module="spot")
                 spot_series = {leg: source for leg, source in view.local.items() if leg[2] == "Spot"}
                 seasonality(spot_series, view.days, years, key)
         persist_preferences(key)
@@ -306,7 +336,7 @@ def main():
                 targets = [calendar(f"Assessment {i + 1}", key + f"_date_{i}",
                                     max(global_first, latest - timedelta(days=7 * i)), global_first, latest)
                            for i in range(count)]
-        view = inputs(min(targets), max(targets), wide=True)
+        view = inputs(min(targets),max(targets),wide=True,module="forward")
         current = view.fixed[view.fixed.vessel.eq(vessel) & view.fixed["product"].eq(product)]
         curves(current, view.fixed, tenor, [pd.Timestamp(day) for day in targets], key)
         persist_preferences(key)
@@ -329,7 +359,7 @@ def main():
                 if custom == "Custom":
                     targets = [calendar("To", key + "_to", latest, global_first, latest),
                                calendar("From", key + "_from", max(global_first, targets[1]), global_first, latest)]
-        view = inputs(min(*targets, latest - timedelta(days=lookback * 2 + 20)), max(targets))
+        view = inputs(min(*targets,latest-timedelta(days=lookback*2+20)),max(targets),module="forward")
         curve_changes(view.fixed, tenor, mode, [pd.Timestamp(day) for day in targets], lookback, key)
         persist_preferences(key)
 
@@ -337,14 +367,12 @@ def main():
     def forward_panel():
         section(3, "Forward Market", "Compare prices, spreads and forward curves.")
         key = f"{vessel}_forward_{product}"
+        panel_refresh("forward")
         study = choice("Forward view", ["Price Explorer", "Forward Curve", "Repricing"], key+"_view",
                        control="segmented_control")
         if study == "Price Explorer":
-            bounds = assessment_window(first, last, key)
-            if bounds[0] <= bounds[1]:
-                explorer(inputs, tuple(pd.Timestamp(day) for day in bounds), first, last, key)
-            else:
-                st.info("Choose a start date before the end date.")
+            loader=lambda *args,**kwargs:inputs(*args,module="forward",**kwargs)
+            explorer(loader,(pd.Timestamp(first),pd.Timestamp(panel_last("forward"))),first,panel_last("forward"),key)
         elif study == "Forward Curve":
             curve_panel()
         else:
@@ -354,34 +382,38 @@ def main():
     @st.fragment
     def forecast_panel():
         section(1, "Forecast", "Spot and fixed-contract BFA forecasts, replay and prospective review.")
+        refresh_version=panel_refresh("forecast")
+        current_last=panel_last("forecast")
         target=choice("Forecast target",["Spot Forecast","BFA Forecast"],f"{vessel}_{product}_forecast_target",control="segmented_control")
         kind="Spot" if target=="Spot Forecast" else "BFA"
         key=f"{vessel}_bfa_path_{product}" if kind=="BFA" else f"{vessel}_spot_forecast_{product}"
         start=max(first,last.replace(year=last.year-8,month=1,day=1))
         with st.spinner("Loading forecast data…"):
-            view=inputs(start,last,seasonal=True)
-        unified_forecast(view.fixed,stamp,vessel,product,key,kind,synthetic=not live,repo=repo,credential_id=credential_id,token=token)
+            view=inputs(start,current_last,seasonal=True,module="forecast")
+        unified_forecast(view.fixed,(stamp,refresh_version),vessel,product,key,kind,synthetic=not live,repo=repo,credential_id=credential_id,token=token)
         persist_preferences(key)
 
     @st.fragment
     def research_panel():
         section(4, "Market Research", "Short-horizon BFA moves and market relationships.")
         key = f"{vessel}_research_{product}"
+        refresh_version=panel_refresh("research")
+        current_last=panel_last("research")
         study = choice("Research view", ["Daily changes", "Lead / lag", "Forecast backtest", "Relationships"],
                        key+"_view", control="segmented_control")
         long_history = study in ("Lead / lag", "Forecast backtest")
-        bounds = assessment_window(first, last, key+study, research=long_history)
+        bounds = assessment_window(first,current_last,key+study,research=long_history)
         if bounds[0] > bounds[1]:
             st.info("Choose a start date before the end date.")
         else:
             start = max(first, bounds[0] - timedelta(days=730)) if long_history else bounds[0]
-            view = inputs(start, last if study != "Relationships" else bounds[1])
+            view = inputs(start,current_last if study!="Relationships" else bounds[1],module="research")
             timestamps = tuple(pd.Timestamp(day) for day in bounds)
             if study == "Relationships":
                 basis, spreads = comparison_studies(view.local, view.days)
                 historical_context(view.local, view.days, basis, spreads, timestamps, key)
             else:
-                predictive_view(view.fixed, timestamps, key+"_predictive", study, (stamp, start, last))
+                predictive_view(view.fixed, timestamps, key+"_predictive", study, (stamp,start,current_last,refresh_version))
         persist_preferences(key)
 
     forecast_panel()

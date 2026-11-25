@@ -88,6 +88,7 @@ def _remember(key, default, decode, render, domain=None):
     # Reassigning the widget on every rerun can overwrite a browser event.
     if widget_key not in st.session_state or current != valid:
         st.session_state[widget_key] = valid
+    memory.setdefault(short,encode(valid))
     return render(restored, widget_key, save)
 
 

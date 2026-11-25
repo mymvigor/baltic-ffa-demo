@@ -6,6 +6,7 @@ import streamlit as st
 from .predictive import (HORIZONS, MIN_CONDITIONAL, MIN_RELATION, MIN_TEST, MIN_TRAIN_DATES,
                          STAGES, build_samples, relationship, score, select_samples, walk_forward)
 from .preferences import choice
+from .selection import contract_choice
 from .ui import COLORS, chart, date_axis, display
 
 VIEWS = ("Price history", "Daily changes", "Lead / lag", "Forecast backtest")
@@ -53,7 +54,7 @@ def predictive_view(fixed, bounds, key, view, stamp):
         selected_stage = choice("Delivery distance", STAGES, key + "_distance_" + sample,
                                 "m1" if historical else "all", format_func=STAGES.get)
     if not historical:
-        contract = choice("Fixed contract", labels, key + "_contract_" + tenor, contract, format_func=labels.get)
+        contract=contract_choice("Fixed contract",contracts,key+"_contract_"+tenor,contract)
     scope = (eligible.vessel.iloc[0], eligible["product"].iloc[0], "USD", "day", tenor)
     cache_stamp = (stamp, len(eligible))
     data = _dataset(cache_stamp, scope, eligible[eligible.kind.eq("Spot") | eligible.tenor.eq(tenor)])

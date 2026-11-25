@@ -16,7 +16,7 @@ def test_spot_ratio_and_difference_share_historical_cohort_and_preserve_actuals(
     difference,_=forecast_path(fixed,'spot:PMX:TEST',{**config,'model':'Difference'})
     assert not np.allclose(ratio.forecast,difference.forecast,equal_nan=True)
     assert ratio.target_date.min()>info['asof']
-    assert (ratio.loc[ratio.historical_n.lt(len(info['reference_years'])),'forecast'].isna()).all()
+    assert ratio.loc[ratio.historical_n.gt(0),'forecast'].notna().all()
 
 
 def test_forecast_score_flat_directions_zero_baseline_and_sample_guard():
@@ -47,6 +47,8 @@ unified_forecast(market_fixture(asof),("new",),"PMX","TEST","unified_test","Spot
     for view in ('Forecast vs Actual','Forecast Error','Forecast Evolution'):
         next(w for w in app.get('segmented_control') if w.label=='Chart view').set_value(view).run()
         assert not app.exception
+    assert not any(w.label=='Evaluation Horizon' for w in app.get('segmented_control'))
+    assert sum(w.label=='Evolution Target Date' for w in app.date_input)==1
     next(w for w in app.get('segmented_control') if w.label=='Review data').set_value('Saved Forecasts').run()
     assert not app.exception
     assert any('No actual issued records' in w.value for w in app.info)
