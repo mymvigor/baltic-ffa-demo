@@ -198,11 +198,11 @@ def _future_chart(rows, future, info, mode, model, baseline, overlays, key):
     difference = mode != "Price path"
     history = rows[rows.quote_day.ge(info["asof"]-pd.Timedelta(days=90))]
     offset = info["latest"] if difference else 0
-    fig.add_scatter(x=history.quote_day, y=history.price-offset, name="Actual BFA", mode="lines", line_color=COLORS[3])
+    fig.add_scatter(x=history.quote_day, y=history.price-offset, name="Actual Spot" if info.get("target_kind")=="Spot" else "Actual BFA", mode="lines", line_color=COLORS[3])
     today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
     connect_current = info["asof"].normalize() == today
     x = [info["asof"], *future.target_date] if connect_current else list(future.target_date)
-    for column, name, color in [("forecast","Seasonal difference forecast",COLORS[0]),("scenario","Exploratory scenario",COLORS[1])]:
+    for column, name, color in [("forecast",info.get("config",{}).get("model","Seasonal forecast")+" forecast",COLORS[0]),("scenario","Exploratory scenario",COLORS[1])]:
         if column == "scenario" and model != "Exploratory scenario":
             continue
         y = [info["latest"]-offset, *(future[column]-offset)] if connect_current else future[column]-offset

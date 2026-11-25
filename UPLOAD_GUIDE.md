@@ -11,6 +11,8 @@
 
 如需让自选参考窗口和主观判断也在后台每日更新，可在前台 Streamlit Secrets 另配 `github_forecast_writer_token`，仅授权私有数据仓库 Contents 读写。然后在 Forecast records 点击 **Save and enable daily updates**。不配置该令牌时，后台仍保存默认历史差值模型；交互情景保存在当前浏览器，可导出。
 
-预测图入口：Forecast → BFA price path。原来的最终结算价模型保留在 Contract settlement。Saved forecast review 用于回看实际生成的版本并与随后出现的真实报价比较。主观因子的作用日期固定保存，不会因后台每日运行而自动延长。
+预测图入口：Forecast → Spot Forecast / BFA Forecast。Spot 的月度结算估计融入 Spot Forecast。复盘可切换 Historical Replay / Saved Forecasts，真实记录不会被当前参数覆盖。主观因子的作用日期固定保存，不会因后台每日运行而自动延长。
 
 旧版水平线预测的历史记录保留原样，新预测使用 bfa-seasonal-difference-v2 标记，避免把新算法冒充成过去已经生成的预测。前台、后台两个包都需更新，以保证每日任务和图表使用一致算法。
+
+本次统一 Forecast 入口改为 Spot Forecast / BFA Forecast；不再将 Contract Settlement 作为独立主入口。Spot 预测包含有完整日历和覆盖数据的月度结算估计。前后台两个包均需更新，每日任务沿用原预测存储，为 Spot 和 BFA 分别保存。默认四项评分与复盘使用共享参数，主观情景不冒充历史成绩。多因子 Linear/Ridge 尚未接入新的共享界面，原研究实现保留。

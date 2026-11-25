@@ -35,6 +35,11 @@ def market_fixture(asof='2026-11-23'):
             rows.append(dict(identity=f"fixed-{lag}",quote_day=day,vessel="PMX",product="TEST",kind="BFA",
                 currency="USD",unit="day",tenor="month",delivery_start=start,delivery_end=end,price=price,
                 received_at=(day.tz_localize("UTC")+pd.Timedelta(hours=16)).isoformat()))
+    old_spot=[]
+    for row in rows:
+        if row['identity'].startswith('fixed-'):
+            old_spot.append({**row,'identity':'spot','kind':'Spot','tenor':'spot','delivery_start':None,'delivery_end':None})
+    rows.extend(old_spot)
     return frame(rows)
 
 
@@ -189,18 +194,18 @@ outlook_view(fixed, ("test",), "PMX", "TEST", "future_test", synthetic=True)
 ''',default_timeout=30).run()
     assert not result.exception
     spec=json.loads(result.get('plotly_chart')[0].proto.spec)
-    assert any(trace.get('name') == 'Seasonal difference forecast' for trace in spec['data'])
+    assert any(trace.get('name') == 'Difference forecast' for trace in spec['data'])
     next(w for w in result.get('segmented_control') if w.label=='BFA path').set_value('Exploratory scenario').run()
     next(w for w in result.get('segmented_control') if w.label=='Market judgement').set_value('Bearish').run()
     assert not result.exception
     def values(name):
         spec=json.loads(result.get('plotly_chart')[0].proto.spec)
         return next(trace['y'] for trace in spec['data'] if trace.get('name')==name)
-    base=values('Seasonal difference forecast')
+    base=values('Difference forecast')
     before=values('Exploratory scenario')
     result.number_input[0].set_value(.6).run()
     assert not result.exception
-    assert values('Seasonal difference forecast') == base
+    assert values('Difference forecast') == base
     assert values('Exploratory scenario') != before
     next(w for w in result.get('segmented_control') if w.label=='Forecast view').set_value('Saved forecast review').run()
     assert not result.exception
@@ -223,7 +228,8 @@ def test_daily_worker_keeps_saved_judgement_deadline_and_generates_real_future_r
             'judgement_until':'2026-11-27','fade':True}
     active={'fixed':dict(vessel='PMX',product='TEST',config=config)}
     records=worker.generate(market_fixture(),active,now='2026-11-25T02:00:00Z')
-    assert len(records) == 2
+    assert len([r for r in records if r["contract"]=="fixed"]) == 2
+    assert any(r["config"].get("target_kind")=="Spot" for r in records)
     saved=next(row for row in records if row['config']['judgement']=='Bearish')
     assert saved['config']['judgement_until'] == '2026-11-27'
     assert all(pd.Timestamp(point['target_date']) > pd.Timestamp('2026-11-25') for point in saved['points'])

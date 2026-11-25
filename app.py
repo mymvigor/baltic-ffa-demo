@@ -22,6 +22,7 @@ from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
 from ffa.predictive_ui import predictive_view
 from ffa.outlook_ui import outlook_view
+from ffa.forecast_ui import unified_forecast
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -352,18 +353,14 @@ def main():
 
     @st.fragment
     def forecast_panel():
-        section(1, "Forecast", "Future BFA quotation paths and separate contract settlement models.")
-        target = choice("Forecast target", ["BFA price path", "Contract settlement"],
-                        f"{vessel}_{product}_forecast_target", control="segmented_control")
-        key = f"{vessel}_bfa_path_{product}" if target == "BFA price path" else f"{vessel}_settlement_{product}"
-        start = max(first,last.replace(year=last.year-(8 if target == "BFA price path" else 12),month=1,day=1))
+        section(1, "Forecast", "Spot and fixed-contract BFA forecasts, replay and prospective review.")
+        target=choice("Forecast target",["Spot Forecast","BFA Forecast"],f"{vessel}_{product}_forecast_target",control="segmented_control")
+        kind="Spot" if target=="Spot Forecast" else "BFA"
+        key=f"{vessel}_bfa_path_{product}" if kind=="BFA" else f"{vessel}_spot_forecast_{product}"
+        start=max(first,last.replace(year=last.year-8,month=1,day=1))
         with st.spinner("Loading forecast data…"):
-            view = inputs(start, last, seasonal=True)
-        if target == "BFA price path":
-            outlook_view(view.fixed, stamp, vessel, product, key, synthetic=not live,
-                         repo=repo, credential_id=credential_id, token=token)
-        else:
-            settlement_view(view.fixed, stamp, vessel, product, key, synthetic=not live)
+            view=inputs(start,last,seasonal=True)
+        unified_forecast(view.fixed,stamp,vessel,product,key,kind,synthetic=not live,repo=repo,credential_id=credential_id,token=token)
         persist_preferences(key)
 
     @st.fragment

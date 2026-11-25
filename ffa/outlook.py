@@ -7,7 +7,7 @@ import pandas as pd
 
 from .settlement import sessions
 
-ENGINE = "bfa-seasonal-difference-v2"
+ENGINE = "seasonal-path-v3"
 WINDOWS = (5, 10, 20, 30, 60)
 DEFAULTS = dict(window=20, weighting="Equal weighted", model="Seasonal difference",
                 judgement="Neutral", strength=.3, maximum_pct=10., reason="", fade=True)
@@ -98,7 +98,7 @@ def _catalogue(fixed, window, weighting):
     return prepared
 
 
-def _analogues(catalogue, metadata, origin, years=None):
+def _analogues(catalogue, metadata, origin, years=None, custom=None, weighting="Equal weighted"):
     matches = []
     for (tenor,start,end),(identity,series,means) in catalogue.items():
         if tenor != metadata.tenor or start.month != metadata.delivery_start.month or end.month != metadata.delivery_end.month:
@@ -110,10 +110,16 @@ def _analogues(catalogue, metadata, origin, years=None):
         if start != metadata.delivery_start-pd.DateOffset(years=lag) or end != metadata.delivery_end-pd.DateOffset(years=lag):
             continue
         cutoff = origin-pd.DateOffset(years=lag)
-        index = means.index.searchsorted(cutoff,side="right")-1
-        if index < 0 or (cutoff-means.index[index]).days > 8:
-            continue
-        matches.append(dict(year=int(year),lag=int(lag),contract=identity,series=series,reference=float(means.iloc[index])))
+        if custom:
+            sample=series.loc[pd.Timestamp(custom[0])-pd.DateOffset(years=lag):pd.Timestamp(custom[1])-pd.DateOffset(years=lag)]
+            if sample.empty:
+                continue
+            value=reference_values(sample,len(sample),weighting)["level"]
+        else:
+            index=means.index.searchsorted(cutoff,side="right")-1
+            if index<0 or (cutoff-means.index[index]).days>8:continue
+            value=float(means.iloc[index])
+        matches.append(dict(year=int(year),lag=int(lag),contract=identity,series=series,reference=value))
     return sorted(matches,key=lambda row:row["year"],reverse=True)
 
 
@@ -136,7 +142,7 @@ def _aligned_values(series, targets):
     return np.where(valid,series.to_numpy(float)[chosen],np.nan)
 
 
-def _seasonal_points(targets, reference, analogues):
+def _seasonal_points(targets, reference, analogues, model="Difference", stable=True):
     totals, bases, counts = np.zeros(len(targets)),np.zeros(len(targets)),np.zeros(len(targets),dtype=int)
     for analogue in analogues:
         historical = pd.DatetimeIndex(targets)-pd.DateOffset(years=analogue["lag"])
@@ -147,30 +153,40 @@ def _seasonal_points(targets, reference, analogues):
         counts += valid
     mean = np.divide(totals,counts,out=np.full(len(targets),np.nan),where=counts>0)
     base = np.divide(bases,counts,out=np.full(len(targets),np.nan),where=counts>0)
-    return mean+reference-base,mean,base,counts
+    predicted = mean*reference/np.where(base>1e-8,base,np.nan) if model == "Ratio" else mean+reference-base
+    if stable:
+        predicted = np.where(counts==len(analogues),predicted,np.nan)
+    return predicted,mean,base,counts
 
 
 def forecast_path(fixed,contract,config=None,asof=None,*,_prepared=None):
     config = {**DEFAULTS, **(config or {})}
-    config["model"] = "Seasonal difference"  # Migrate v1 settings, never old records.
+    config["model"] = "Ratio" if config.get("model") == "Ratio" else "Difference"
+    if config.get("target_kind") == "Spot":
+        return spot_forecast_path(fixed,config,asof)
     rows, series = contract_history(fixed, contract, asof)
     if rows.empty:
         return pd.DataFrame(), {}
     asof, metadata = rows.quote_day.max(), rows.iloc[-1]
-    reference = reference_values(series.dropna(), int(config["window"]), config["weighting"])
+    sample=series.dropna()
+    if config.get("custom"):
+        sample=sample.loc[pd.Timestamp(config["custom"][0]):min(asof,pd.Timestamp(config["custom"][1]))]
+    reference = reference_values(sample,len(sample) if config.get("custom") else int(config["window"]),config["weighting"]) if len(sample) else None
     if reference is None:
         return pd.DataFrame(), dict(reason=f"Need {config['window']} valid quotes for this fixed contract. Try a shorter reference window.")
     scope = fixed[fixed.vessel.eq(metadata.vessel) & fixed["product"].eq(metadata["product"]) &
                   fixed.currency.eq(metadata.currency) & fixed.unit.eq(metadata.unit) & fixed.quote_day.le(asof)]
     catalogue = _prepared if _prepared is not None else _catalogue(scope,int(config["window"]),config["weighting"])
-    available = _analogues(catalogue,metadata,asof)
+    available = _analogues(catalogue,metadata,asof,custom=config.get("custom"),weighting=config["weighting"])
     candidates = [item["year"] for item in available]
     years = config.get("years")
     analogues = [item for item in available if item["year"] in years] if years is not None else available[:5]
     if not analogues:
         return pd.DataFrame(),dict(reason="No completed historical matching contracts have the required reference quotes. Choose another contract or a shorter window.",candidate_years=candidates)
     days, assumed = future_grid(asof, metadata.delivery_end)
-    values,historical,base,counts = _seasonal_points(days,reference["level"],analogues)
+    if config.get("forecast_end"):
+        days = days[days<=pd.Timestamp(config["forecast_end"])]
+    values,historical,base,counts = _seasonal_points(days,reference["level"],analogues,config["model"])
     output = pd.DataFrame(dict(target_date=days,horizon=np.arange(1,len(days)+1),forecast=values,
                               historical_mean=historical,historical_reference=base,historical_n=counts,
                               unchanged=reference["latest"],reference_mean=reference["level"]))
@@ -184,7 +200,7 @@ def forecast_path(fixed,contract,config=None,asof=None,*,_prepared=None):
                 **reference,assumed_calendar=assumed,config=config,candidate_years=candidates,
                 reference_years=[item["year"] for item in analogues],
                 historical_reference=float(np.mean([item["reference"] for item in analogues])),
-                source_revision=data_revision(scope[scope.identity.isin(source_contracts)]))
+                source_revision="" if config.get("_replay") else data_revision(scope[scope.identity.isin(source_contracts)]))
     return output,info
 
 
@@ -216,7 +232,7 @@ def prediction_record(path, info, contract, config, source_revision, created_at=
 
 
 def evaluated_record(record, fixed, through=None):
-    rows = fixed[fixed.identity.eq(record["contract"]) & fixed.kind.eq("BFA")].sort_values("quote_day")
+    rows = fixed[fixed.kind.eq("Spot") & fixed.vessel.eq(record["vessel"]) & fixed["product"].eq(record["product"])].sort_values("quote_day") if record.get("config",{}).get("target_kind") == "Spot" else fixed[fixed.identity.eq(record["contract"]) & fixed.kind.eq("BFA")].sort_values("quote_day")
     if through is not None:
         rows = rows[rows.quote_day.le(through)]
     actual = rows.drop_duplicates("quote_day", keep="last").set_index("quote_day").price
@@ -278,7 +294,7 @@ def validation_errors(fixed, contract, config, horizons, asof=None):
                 continue
             valid_h = [h for h in horizon_set if i+h<len(days) and np.isfinite(values[i+h])]
             targets = pd.DatetimeIndex([days[i+h] for h in valid_h])
-            predictions,_,_,_ = _seasonal_points(targets,levels[i],analogues)
+            predictions,_,_,_ = _seasonal_points(targets,levels[i],analogues,config.get("model","Difference"))
             for h,predicted in zip(valid_h,predictions):
                 if not np.isfinite(predicted):
                     continue
@@ -298,3 +314,127 @@ def independent_errors(errors, horizon):
             indices.append(index)
             next_date = row.target_date
     return rows.loc[indices].copy()
+
+
+def spot_forecast_path(fixed,config,asof=None):
+    rows=fixed[fixed.kind.eq("Spot") & fixed.price.notna()].sort_values("quote_day").drop_duplicates("quote_day",keep="last")
+    if asof is not None:
+        rows=rows[rows.quote_day.le(asof)]
+    if rows.empty:
+        return pd.DataFrame(),{}
+    origin=rows.quote_day.max(); meta=rows.iloc[-1]
+    series=rows.set_index("quote_day").price
+    custom=config.get("custom")
+    sample=series.loc[pd.Timestamp(custom[0]):min(origin,pd.Timestamp(custom[1]))] if custom else series.tail(int(config["window"]))
+    ref=reference_values(sample,len(sample) if custom else int(config["window"]),config["weighting"]) if len(sample) else None
+    if ref is None:
+        return pd.DataFrame(),dict(reason="Insufficient current reference quotes.")
+    end=pd.Timestamp(config.get("forecast_end",origin+pd.DateOffset(months=3)))
+    days,assumed=future_grid(origin,end)
+    available=[]
+    for year in sorted(series.index.year.unique(),reverse=True):
+        lag=origin.year-int(year)
+        if lag<=0 or end-pd.DateOffset(years=lag)>=origin:
+            continue
+        cutoff=origin-pd.DateOffset(years=lag)
+        historical=series.loc[:cutoff]
+        sample=historical.loc[pd.Timestamp(custom[0])-pd.DateOffset(years=lag):pd.Timestamp(custom[1])-pd.DateOffset(years=lag)] if custom else historical.tail(int(config["window"]))
+        b=reference_values(sample,len(sample) if custom else int(config["window"]),config["weighting"]) if len(sample) else None
+        if b is not None and (cutoff-sample.index[-1]).days<=8:
+            available.append(dict(year=int(year),lag=lag,contract="Spot",series=series,reference=b["level"]))
+    years=config.get("years")
+    analogues=[a for a in available if a["year"] in years] if years is not None else available[:5]
+    if not analogues or (years is not None and len(analogues)!=len(years)):
+        return pd.DataFrame(),dict(reason="No historical years available before this forecast date.")
+    values,c,b,n=_seasonal_points(days,ref["level"],analogues,config.get("model","Difference"))
+    path=pd.DataFrame(dict(target_date=days,horizon=np.arange(1,len(days)+1),forecast=values,historical_mean=c,
+                           historical_reference=b,historical_n=n,unchanged=ref["latest"],reference_mean=ref["level"]))
+    if path.empty or not path.forecast.notna().any():
+        return pd.DataFrame(),dict(reason="No common historical coverage for the selected years and range.")
+    path["scenario"]=apply_judgement(path,config)
+    info=dict(asof=origin,expiry=end,delivery_start=end.replace(day=1),tenor="spot",target_kind="Spot",vessel=meta.vessel,
+              product=meta["product"],currency=meta.currency,unit=meta.unit,**ref,config=config,assumed_calendar=assumed,
+              candidate_years=[a["year"] for a in available],reference_years=[a["year"] for a in analogues],
+              historical_reference=float(np.mean([a["reference"] for a in analogues])),source_revision="" if config.get("_replay") else data_revision(rows))
+    return path,info
+
+
+def replay_current(fixed,contract,config,horizon,strict=False,target_date=None):
+    kind=config.get("target_kind","BFA")
+    if kind=="Spot":
+        rows=fixed[fixed.kind.eq("Spot")].sort_values("quote_day").drop_duplicates("quote_day")
+    else:
+        rows=fixed[fixed.kind.eq("BFA") & fixed.identity.eq(contract)].sort_values("quote_day").drop_duplicates("quote_day")
+    if rows.empty:
+        return pd.DataFrame()
+    if kind=="BFA" and config.get("pooled") and not strict and target_date is None:
+        raw=validation_errors(fixed,contract,config,[horizon])
+        cases=independent_errors(raw,horizon)
+        if cases.empty:return cases
+        cases=cases.copy();cases["anchor"]=cases.unchanged
+        cases["momentum"]=cases.anchor;cases["majority"]=0.
+        grouped={identity:g.sort_values("quote_day").drop_duplicates("quote_day").set_index("quote_day").price for identity,g in fixed[fixed.kind.eq("BFA")].groupby("identity")}
+        for idx,row in cases.iterrows():
+            past=grouped[row.contract].loc[:row.date].diff().dropna()
+            if len(past):
+                cases.loc[idx,"momentum"]=row.anchor+past.iloc[-1]*horizon
+                cases.loc[idx,"majority"]=np.sign(past).mode().iloc[0]
+        return cases
+    calendar=pd.DatetimeIndex(sorted(fixed.quote_day.unique()))
+    latest=rows.quote_day.max(); years=config.get("years")
+    offsets=[latest.year-int(y) for y in years] if years is not None else None
+    actual=rows.set_index("quote_day").price
+    origins=rows.quote_day.iloc[-1500:] if target_date is None else rows.loc[rows.quote_day.lt(pd.Timestamp(target_date)),"quote_day"].iloc[-120:]
+    prepared=_catalogue(fixed,int(config["window"]),config["weighting"]) if kind=="BFA" else None
+    # Non-overlapping test targets, never fit parameters to these outcomes.
+    output=[]; next_origin=pd.Timestamp.min
+    for origin in origins:
+        if target_date is None and origin<next_origin:
+            continue
+        i=calendar.searchsorted(origin)
+        if target_date is None:
+            if i+horizon>=len(calendar):continue
+            target=calendar[i+horizon]
+            if target not in actual.index:continue
+        else:
+            target=pd.Timestamp(target_date)
+        known=fixed[fixed.quote_day.le(origin)]
+        if strict:
+            if "available_at" not in known:
+                continue
+            stamps=pd.to_datetime(known.available_at,utc=True,errors="coerce")
+            known=known[stamps.notna() & stamps.le(origin.tz_localize("UTC")+pd.Timedelta(days=1)-pd.Timedelta(nanoseconds=1))]
+        available=known[known.kind.eq(kind)]
+        if kind=="BFA":available=available[available.identity.eq(contract)]
+        if available.empty or available.quote_day.max()!=origin:continue
+        cfg={**config,"forecast_end":str(target.date()),"judgement":"Neutral","_replay":True}
+        if offsets is not None:
+            cfg["years"]=[origin.year-lag for lag in offsets]
+        if config.get("custom"):
+            shift=origin-latest
+            cfg["custom"]=[str((pd.Timestamp(d)+shift).date()) for d in config["custom"]]
+        path,info=forecast_path(known,contract,cfg,asof=origin,_prepared=prepared)
+        if path.empty:
+            continue
+        point=path[path.target_date.eq(target)].dropna(subset=["forecast"])
+        if point.empty:
+            continue
+        prediction=float(point.forecast.iloc[0]); anchor=float(actual.loc[origin])
+        past=actual.loc[:origin].diff().dropna()
+        majority=float(np.sign(past).mode().iloc[0]) if len(past) else 0.
+        momentum=anchor+(float(past.iloc[-1])*horizon if len(past) else 0.)
+        output.append(dict(date=origin,target_date=target,forecast=prediction,actual=float(actual.get(target,np.nan)),
+                           anchor=anchor,unchanged=anchor,momentum=momentum,majority=majority))
+        next_origin=target
+    return pd.DataFrame(output)
+
+
+def forecast_score(rows,min_samples=10):
+    if rows.empty or len(rows)<min_samples:
+        return dict(samples=len(rows),mae=np.nan,skill=np.nan,direction=np.nan)
+    error=rows.forecast-rows.actual; baseline=(rows.anchor-rows.actual).abs().mean()
+    return dict(samples=len(rows),mae=float(error.abs().mean()),skill=float(100*(1-error.abs().mean()/baseline)) if baseline>1e-8 else np.nan,
+                direction=float((np.sign(rows.forecast-rows.anchor)==np.sign(rows.actual-rows.anchor)).mean()),
+                r2=float(1-np.square(error).sum()/np.square(rows.actual-rows.actual.mean()).sum()) if np.square(rows.actual-rows.actual.mean()).sum()>1e-8 else np.nan,
+                bias=float(error.mean()),momentum_mae=float((rows.momentum-rows.actual).abs().mean()),
+                majority_accuracy=float((rows.majority==np.sign(rows.actual-rows.anchor)).mean()))

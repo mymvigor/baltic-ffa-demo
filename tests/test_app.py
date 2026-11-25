@@ -55,9 +55,9 @@ def test_research_navigation_and_timestamp_guard(app):
 
 def test_forecast_uses_sample_guard_on_demo(app):
     navigate(app,"Forecast")
-    next(w for w in app.get('segmented_control') if w.label == 'Forecast target').set_value('Contract settlement').run()
+    next(w for w in app.get('segmented_control') if w.label == 'Forecast target').set_value('Spot Forecast').run()
     assert not app.exception
-    assert any("historical Spot years" in w.value for w in app.info)
+    assert any("historical" in w.value.lower() for w in app.info)
 
 def test_browser_settings_accept_numpy_years():
     import numpy as np

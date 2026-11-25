@@ -1,5 +1,15 @@
 # Baltic FFA Dashboard
 
+## Current unified Forecast interface
+
+Forecast is now split by target: **Spot Forecast** and **BFA Forecast**. Both use the same seasonal Difference/Ratio framework, reference-year/window controls (including Custom), forecast range, chart components, replay and versioned journal. Configurations remain target-specific. Historical-year composition is fixed per forecast point: a missing selected-year match leaves a gap instead of changing the cohort. Spot Forecast integrates monthly settlement estimates from known Spot plus the remaining forecast, only when the publication calendar and full monthly coverage exist; no quarter/year aggregation is inferred. Contract Settlement is no longer a primary UI entry. Legacy settlement/regression implementations remain in source for research compatibility.
+
+Four default score metrics are Direction Accuracy, Forecast Skill Score, MAE and Samples. Skill = 100 × (1 − model MAE / unchanged-price MAE); zero baseline error or inadequate cases suppresses the score. Horizons are 1/5/10/20/60 sessions. Replay is chronological, with non-overlapping targets, train-time historical-year availability and a separate development/holdout partition. BFA can reuse matched expired peers; timestamp-verified mode rejects unknown vintages. These exploratory scores are not proof of trading profitability.
+
+One review chart switches between Forecast vs Actual, Forecast Error and Forecast Evolution. Historical Replay uses current parameters. Saved Forecasts reads original issued values, never recalculates or overwrites them; it scores only available, non-overlapping outcomes from selected saved versions. Evolution keeps the target date fixed and varies the prediction-origin date. Subjective scenarios affect future paths and prospective records but are excluded from retrospective skill. Multi-factor linear/Ridge fitting has not yet been integrated into this new shared UI; the prior research implementations are retained. Daily storage reuses the existing private forecast journal and worker for both targets.
+
+The sections below document retained implementations, including the legacy settlement research; they do not imply all legacy controls remain primary UI entries.
+
 Deploy main / app.py in Streamlit Community Cloud. The default uses synthetic data. Live mode uses a private GitHub repository. Configure the GitHub read credential in Streamlit Secrets.
 
 All four modules appear on one page, with global vessel and benchmark selection:
