@@ -37,7 +37,13 @@ def contract_catalog(fixed,trades=(),today=None):
     counts={}
     for t in trades:counts[t['contract']]=counts.get(t['contract'],0)+1
     today=pd.Timestamp(today or pd.Timestamp.today().date())
-    return dict(sorted(result.items(),key=lambda pair:(pd.Timestamp(pair[1]['delivery_end'])<today,-counts.get(pair[0],0),pd.Timestamp(pair[1]['delivery_start']),pair[1]['search'])))
+    quote_dates={row.identity:pd.Timestamp(row.quote_day).toordinal() for _,row in rows.iterrows()}
+    tenor_order={'month':0,'quarter':1,'year':2}
+    def priority(pair):
+        identity,info=pair;expired=pd.Timestamp(info['delivery_end'])<today
+        delivery=pd.Timestamp(info['delivery_start']).toordinal()
+        return (expired,tenor_order.get(info['tenor'],3),-quote_dates.get(identity,0),-delivery if expired else delivery,-counts.get(identity,0),info['search'])
+    return dict(sorted(result.items(),key=priority))
 
 
 def raw_trade(t,catalog):

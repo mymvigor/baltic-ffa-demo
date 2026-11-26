@@ -2,14 +2,17 @@
 from streamlit.components.v2 import component
 
 CSS='''
-.wrap{font:14px Arial,sans-serif;color:#243b52}.scroll{overflow:auto;border:1px solid #dce5ed;border-radius:8px}
-table{border-collapse:collapse;width:100%;min-width:880px}th{background:#edf3f6;text-align:left;padding:9px 7px;font-size:12px;white-space:nowrap}
-td{padding:2px;border-top:1px solid #e7edf3}input,select{box-sizing:border-box;width:100%;min-width:70px;border:1px solid transparent;border-radius:3px;background:transparent;color:#243b52;font:inherit;padding:7px 5px}
-input:focus,select:focus{border-color:#18836f;outline:none;background:white}input[type=date]{min-width:126px}input.contract{min-width:245px}
+.wrap{font:13px Arial,sans-serif;color:#243b52;width:100%;min-width:0;container-type:inline-size}.scroll{width:100%;box-sizing:border-box;border:1px solid #dce5ed;border-radius:8px}
+table{border-collapse:collapse;width:100%;table-layout:fixed}th{background:#edf3f6;text-align:left;padding:9px 5px;font-size:12px;overflow-wrap:anywhere}
+th,td{box-sizing:border-box}td{padding:2px;border-top:1px solid #e7edf3;min-width:0}input,select{box-sizing:border-box;width:100%;max-width:100%;min-width:0;border:1px solid transparent;border-radius:3px;background:transparent;color:#243b52;font:inherit;padding:7px 3px}
+input:focus,select:focus{border-color:#18836f;outline:none;background:white}input[type=date]{min-width:0;font-size:12px}input.contract{min-width:0}
 .bad{border-color:#bd4656!important;background:#fff5f5}button{border:0;color:#64798b;background:none;cursor:pointer;padding:6px}button:hover{color:#bd4656}
 .status{font-size:13px;color:#52677b;margin:0 0 8px}.error{color:#bd4656;font-size:12px;margin:6px 0}.deleted{opacity:.5;text-decoration:line-through}.hint{font-size:12px;color:#718292;margin-top:6px}
 .locked{opacity:.7;pointer-events:none}input:disabled,select:disabled{opacity:.8}
-.save{background:#18836f;color:white;padding:8px 15px;border-radius:6px;float:right}.save:disabled{background:#b4c2c9;cursor:default}.save:hover{color:white}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}.toolbar .status{margin:0}.actions{display:flex;gap:8px}.add{border:1px solid #c4d3dc;border-radius:6px;padding:7px 13px;color:#243b52}
+.save{background:#18836f;color:white;padding:8px 15px;border-radius:6px}.save:disabled,.add:disabled{background:#d6e0e6;color:#718292;cursor:default}.save:hover{color:white}
+.row-actions button{font-size:11px;padding:5px 2px;max-width:100%}
+@container(max-width:820px){thead{display:none}table,tbody{display:block;width:100%}tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-bottom:1px solid #dce5ed}td{display:block;border:0}td:before{content:attr(data-label);display:block;font-size:11px;color:#64798b;padding:4px 3px 0}.row-actions{grid-column:1/-1;text-align:right}.row-actions:before{display:none}}
 '''
 
 JS=r'''
@@ -23,7 +26,7 @@ export default function({data,parentElement,setStateValue}) {
   try { tab=sessionStorage.getItem('ffa-position-tab');if(!tab){tab=crypto.randomUUID();sessionStorage.setItem('ffa-position-tab',tab);} }
   catch {tab=crypto.randomUUID();}
   let local=null, storageFailed=false, locked=false, sentVersion=null, nextRetry=0,attempt=0;
-  const fresh=()=>({version:crypto.randomUUID(),edits:{},deletes:{},updated:Date.now(),lease:{owner:tab,until:0}});
+  const fresh=()=>({version:crypto.randomUUID(),edits:{},deletes:{},blankRows:[],updated:Date.now(),lease:{owner:tab,until:0}});
   const read=()=>{try{const v=JSON.parse(localStorage.getItem(storeKey));return v&&v.edits&&v.deletes?v:(local||fresh());}catch{return local||fresh();}};
   let draft=read();
   const persist=()=>{local=draft;try{localStorage.setItem(storeKey,JSON.stringify(draft));}catch{storageFailed=true;}};
@@ -57,12 +60,14 @@ export default function({data,parentElement,setStateValue}) {
   const status=document.createElement('div');status.className='status';
   const error=document.createElement('div');error.className='error';
   const saveButton=document.createElement('button');saveButton.className='save';saveButton.textContent='Save changes';
-  if(data.mode==='entry'){host.append(saveButton);host.append(status);}
+  const addButton=document.createElement('button');addButton.className='add';addButton.textContent='Add row';
+  if(data.mode==='entry'){const toolbar=document.createElement('div');toolbar.className='toolbar';toolbar.append(status);const actions=document.createElement('div');actions.className='actions';actions.append(addButton);actions.append(saveButton);toolbar.append(actions);host.append(toolbar);}
   const scroll=document.createElement('div');scroll.className='scroll';host.append(scroll);
   const table=document.createElement('table');scroll.append(table);
   const head=document.createElement('thead');table.append(head);
   const hr=document.createElement('tr');head.append(hr);
-  for(const n of [...names,'']){const th=document.createElement('th');th.textContent=n;hr.append(th);}
+  const widths=[14,26,8,12,10,8,16,6];
+  for(const [i,n] of [...names,''].entries()){const th=document.createElement('th');th.textContent=n;th.style.width=widths[i]+'%';hr.append(th);}
   const body=document.createElement('tbody');table.append(body);
   const list=document.createElement('datalist');list.id='contracts-'+crypto.randomUUID();host.append(list);
   for(const c of labels){const option=document.createElement('option');option.value=c.search;list.append(option);}
@@ -84,23 +89,23 @@ export default function({data,parentElement,setStateValue}) {
     }
     if(original&&names.every(n=>String(raw(original)[n]??'')===String(values[n]??''))){delete draft.edits[id];}
     else draft.edits[id]={base:old?old.base:original,fields:values,order:old?.order||Date.now()*1000+entryRows.indexOf(id)};
+    draft.blankRows=(draft.blankRows||[]).filter(k=>k!==id);
     change();
-    if(data.mode==='entry'&&entryRows.indexOf(id)===entryRows.length-1&&(values.Contract||values.Price))addEntry();
   };
   function renderRow(id,values,history=false){
     const tr=document.createElement('tr');tr.dataset.id=id;body.append(tr);rowNodes.set(id,tr);
     for(const name of names){
-      const td=document.createElement('td');tr.append(td);
+      const td=document.createElement('td');td.dataset.label=name;tr.append(td);
       const input=document.createElement(name==='Side'?'select':'input');input.dataset.field=name;
       if(name==='Side'){for(const s of ['Buy','Sell']){const o=document.createElement('option');o.value=o.textContent=s;input.append(o);}}
       else if(name==='Trade Date'){input.type='date';input.max=data.today;}
       else if(name==='Contract'){input.setAttribute('list',list.id);input.className='contract';input.placeholder='Search PMX DEC26…';}
-      else if(['Price','Quantity','Fees'].includes(name)){input.inputMode='decimal';input.style.minWidth='80px';}
+      else if(['Price','Quantity','Fees'].includes(name)){input.inputMode='decimal';}
       else{input.placeholder='Optional';}
       input.value=values[name]??'';
       input.addEventListener('input',()=>saveRow(tr));input.addEventListener('change',()=>saveRow(tr));
       input.addEventListener('keydown',e=>{draft=read();if(!owns()||isLocked()){e.preventDefault();return;}draft.updated=Date.now();persist();
-        if(e.key==='Enter'){e.preventDefault();const rows=[...body.rows],i=rows.indexOf(tr),j=names.indexOf(name);if(i===rows.length-1&&!history)addEntry();body.rows[i+1]?.cells[j]?.querySelector('input,select')?.focus();}
+        if(e.key==='Enter'){e.preventDefault();const rows=[...body.rows],i=rows.indexOf(tr),j=names.indexOf(name);body.rows[i+1]?.cells[j]?.querySelector('input,select')?.focus();}
       });
       input.addEventListener('paste',e=>{
         const text=e.clipboardData?.getData('text/plain')||'';if(!/[\t\n]/.test(text))return;e.preventDefault();
@@ -117,10 +122,10 @@ export default function({data,parentElement,setStateValue}) {
       });
       td.append(input);
     }
-    const td=document.createElement('td');tr.append(td);const undo=document.createElement('button');undo.textContent=history?'Delete':'×';undo.title=history?'Delete transaction':'Remove pending row';td.append(undo);
+    const td=document.createElement('td');td.className='row-actions';tr.append(td);const undo=document.createElement('button');undo.textContent=history?'Delete':'×';undo.title=history?'Delete transaction':'Remove pending row';td.append(undo);
     undo.addEventListener('click',()=>{draft=read();if(!owns()||isLocked())return;
       if(history){if(!window.confirm('Delete this recorded transaction? P&L will be recalculated.'))return;draft.deletes[id]=draft.edits[id]?.base||records.get(id);delete draft.edits[id];tr.classList.add('deleted');}
-      else{delete draft.edits[id];entryRows=entryRows.filter(k=>k!==id);rowNodes.delete(id);tr.remove();if(!entryRows.length)addEntry();}
+      else{delete draft.edits[id];draft.blankRows=(draft.blankRows||[]).filter(k=>k!==id);entryRows=entryRows.filter(k=>k!==id);rowNodes.delete(id);tr.remove();if(!entryRows.length)addBlankRow();}
       change();
     });
     if(history){const cancel=document.createElement('button');cancel.textContent='Undo';cancel.title='Discard this row’s unsynced edit or deletion';td.append(cancel);
@@ -128,10 +133,12 @@ export default function({data,parentElement,setStateValue}) {
     if(draft.deletes[id])tr.classList.add('deleted');
   }
   function addEntry(id=null,values=null){const identity=id||crypto.randomUUID();entryRows.push(identity);renderRow(identity,values||blank());}
+  function addBlankRow(){const id=crypto.randomUUID();draft.blankRows=[...(draft.blankRows||[]),id];addEntry(id);persist();}
   function renderAll(){body.replaceChildren();rowNodes.clear();entryRows=[];
     if(data.mode==='entry'){
       for(const [id,e] of Object.entries(draft.edits)){if(!e.base)addEntry(id,e.fields);}
-      addEntry();if(entryRows.length<2)addEntry();
+      for(const id of draft.blankRows||[]){if(!draft.edits[id])addEntry(id);}
+      if(!entryRows.length)addBlankRow();
     }else{
       const ids=new Set([...data.visible,...Object.entries(draft.edits).filter(([id,e])=>e.base).map(([id])=>id),...Object.keys(draft.deletes)]);
       for(const id of ids){const t=records.get(id);if(t)renderRow(id,draft.edits[id]?.fields||raw(t),true);}
@@ -142,6 +149,7 @@ export default function({data,parentElement,setStateValue}) {
     const errors=issues();const blocked=new Set(errors.map(e=>e[0]));
     for(const [id,tr] of rowNodes){tr.querySelectorAll('input,select').forEach(input=>{input.classList.toggle('bad',blocked.has(id));input.disabled=isLocked()||!owns()||!!draft.deletes[id];});}
     if(data.mode!=='entry')return;
+    addButton.disabled=isLocked()||!owns();
     saveButton.disabled=!pending()||!data.writable||errors.length>0||isLocked()||!owns();
     scroll.classList.toggle('locked',isLocked()||!owns());
     if(isLocked())status.textContent='Saving...';
@@ -152,6 +160,7 @@ export default function({data,parentElement,setStateValue}) {
       data.failure&&data.failure.version===draft.version?data.failure.message:pending()&&!data.writable?'Private write permission is not configured. The pending batch remains in this browser.':'';
   }
   renderAll();
+  addButton.addEventListener('click',()=>{draft=read();if(!owns()||isLocked())return;addBlankRow();refreshStatus();});
   function submit(){
     draft=read();if(!owns()||isLocked()||!pending()||!data.writable||issues().length)return;
     draft.authorizedVersion=draft.version;

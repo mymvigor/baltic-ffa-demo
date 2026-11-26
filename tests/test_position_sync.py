@@ -100,3 +100,19 @@ def test_concurrent_new_fills_get_unambiguous_persisted_execution_order():
     saved,_,_=sync_batch(storage,{'edits':event(catalog),'deletes':{}},catalog,fixed,'2026-11-07','ffa-positions')
     assert [t['id'] for t in saved['trades']]==['other','new1']
     assert [t['sequence'] for t in saved['trades']]==[1,2] and storage.puts==2
+
+
+def test_contract_choices_prioritize_active_monthly_and_latest_quotes():
+    fixed=quotes().tail(1).copy()
+    from ffa.analytics import frame
+    rows=[]
+    for identity,tenor,start,end,date in [
+        ('recent-month','month','2026-12-01','2026-12-31','2026-11-25'),
+        ('next-month','month','2027-01-01','2027-01-31','2026-11-25'),
+        ('stale-month','month','2026-11-01','2026-11-30','2026-11-02'),
+        ('quarter','quarter','2027-01-01','2027-03-31','2026-11-26'),
+        ('year','year','2027-01-01','2027-12-31','2026-11-26'),
+        ('expired','month','2025-12-01','2025-12-31','2025-11-25')]:
+        row=fixed.iloc[0].to_dict();row.update(identity=identity,tenor=tenor,delivery_start=start,delivery_end=end,quote_day=date);rows.append(row)
+    catalog=contract_catalog(frame(rows),today='2026-11-26')
+    assert list(catalog)==['recent-month','next-month','stale-month','quarter','year','expired']
