@@ -19,6 +19,8 @@ def test_single_page_default_sections_and_no_writes_while_browsing(monkeypatch):
     assert [s.value for s in app.subheader]==['Account Overview','Open Positions','Trade Entry','P&L Performance','Trade History']
     assert not app.get('segmented_control') and not app.expander
     assert not any(w.label in ('+ Trade','Save to GitHub','Apply to draft') for w in app.button)
+    assert not any(w.label in ('Vessel','Contracts','Period','Display / export dates') for w in [*app.multiselect,*app.selectbox,*app.date_input])
+    assert any('No saved transactions' in w.value for w in app.caption)
     assert app.get('download_button')
     next(w for w in app.button if w.label=='Refresh').click().run()
     assert not app.exception
@@ -57,3 +59,46 @@ show()
     store.fail=None
     app.session_state['request']={'version':'second-click','attempt':2,'payload':{'edits':event(catalog,'new2'),'deletes':{}}}
     app.run();assert not app.exception and len(store.book['trades'])==2
+
+
+def test_direct_filters_reset_invalid_contracts_and_keep_account_risk(monkeypatch):
+    from ffa.positions import empty_book
+    from test_positions import trade
+    fixed=quotes();smx=fixed.assign(identity='smx',vessel='SMX',product='S11TC',price=fixed.price+10)
+    fixed=pd.concat([fixed,smx],ignore_index=True)
+    book=empty_book();book['trades']=[trade(1,'Buy',5,100),{**trade(1,'Sell',5,100), 'id':'smx-trade','contract':'smx','vessel':'SMX','product':'S11TC'}]
+    store=PrivateStore(book)
+    @contextmanager
+    def connect(*args):yield store
+    monkeypatch.setattr(ui,'connect',connect)
+    monkeypatch.setattr(ui,'config',lambda:('private/filter-test','ffa-positions','reader','writer'))
+    monkeypatch.setattr(ui,'grid',lambda **kw:SimpleNamespace(batch=None))
+    monkeypatch.setattr(ui,'_filter_fixture',fixed,raising=False)
+    app=AppTest.from_string("""
+import streamlit as st
+import ffa.position_ui as ui
+@st.fragment
+def show():
+ ui.position_management(lambda *args:ui._filter_fixture,lambda:ui._filter_fixture.quote_day.max().date(),lambda module:0,lambda:'filters')
+show()
+""",default_timeout=30).run()
+    assert not app.exception and store.puts==0
+    assert not any(w.label=='Filters' for w in app.toggle)
+    vessel=next(w for w in app.get('segmented_control') if w.label=='Vessel')
+    assert 'CAPE' not in vessel.options
+    original=[w.value for w in app.markdown if 'font-size:1.65rem' in w.value]
+    vessel.set_value('PMX').run()
+    contracts=next(w for w in app.multiselect if w.label=='Contracts')
+    contracts.set_value(['dec']).run()
+    next(w for w in app.get('segmented_control') if w.label=='Vessel').set_value('SMX').run()
+    assert not app.exception and next(w for w in app.multiselect if w.label=='Contracts').value==[]
+    assert set(app.dataframe[0].value.Contract)=={'SMX DEC26'}
+    next(w for w in app.get('segmented_control') if w.label=='Vessel').set_value('HDY').run()
+    assert not app.exception and not app.multiselect
+    assert any('No saved transactions for HDY' in w.value for w in app.caption)
+    next(w for w in app.get('segmented_control') if w.label=='Vessel').set_value('All').run()
+    next(w for w in app.selectbox if w.label=='Period').set_value('Custom dates').run()
+    assert not app.exception and app.date_input
+    next(w for w in app.selectbox if w.label=='Period').set_value('All dates').run()
+    assert not app.exception and not app.date_input and store.puts==0
+    assert [w.value for w in app.markdown if 'font-size:1.65rem' in w.value]==original

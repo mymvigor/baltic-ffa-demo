@@ -11,6 +11,7 @@ from .position_store import Conflict,load,save
 from .selection import contract_label
 
 FIELDS=('Trade Date','Contract','Side','Price','Quantity','Fees','Notes')
+POSITION_VESSELS=('PMX','SMX','HDY')
 
 
 def digest(value):
@@ -18,7 +19,7 @@ def digest(value):
 
 
 def contract_catalog(fixed,trades=(),today=None):
-    rows=fixed[fixed.kind.eq('BFA') & fixed.delivery_start.notna() & fixed.delivery_end.notna()].sort_values('quote_day').drop_duplicates('identity',keep='last')
+    rows=fixed[fixed.kind.eq('BFA') & fixed.vessel.isin(POSITION_VESSELS) & fixed.delivery_start.notna() & fixed.delivery_end.notna()].sort_values('quote_day').drop_duplicates('identity',keep='last')
     result={}
     for _,row in rows.iterrows():
         info=metadata(row)
@@ -74,6 +75,7 @@ def build_batch(book,payload,catalog,today):
     for index,(identity,edit) in enumerate(changes,1):
         try:
             values=edit['fields'];base=edit.get('base');info=resolve_contract(values.get('Contract',''),catalog)
+            if not base and info['vessel'] not in POSITION_VESSELS:raise ValueError('This vessel is not enabled for new positions.')
             d=pd.Timestamp(values.get('Trade Date'))
             if pd.isna(d) or d.tzinfo or d!=d.normalize() or d>pd.Timestamp(today):raise ValueError('Use a valid, non-future Trade Date.')
             number=lambda k,default=None:float(str(values.get(k,default) if values.get(k,default) not in ('',None) else default).replace(',','').replace('$',''))

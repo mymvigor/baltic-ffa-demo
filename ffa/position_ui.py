@@ -8,11 +8,10 @@ import pandas as pd
 import streamlit as st
 from .positions import empty_book,calculate,risk_state
 from .position_store import load,DEFAULT_BRANCH,Conflict
-from .position_sync import contract_catalog,sync_batch
+from .position_sync import contract_catalog,sync_batch,POSITION_VESSELS
 from .position_excel import report
 from .position_grid import grid
 from .store import connect
-from .preferences import multi
 from .quote_views import UP,DOWN,FLAT,signed_style,bars
 from .ui import chart,date_axis,display
 
@@ -46,6 +45,37 @@ def styled(table):
 @st.cache_data(max_entries=16,show_spinner=False)
 def valued(account,trades,asof,version,_fixed):
     return calculate(trades,_fixed,asof)
+
+
+def display_filters(trades,start,end,key):
+    """Filter actual saved trades; an empty ledger has no unusable selectors."""
+    if not trades:
+        st.caption('No saved transactions in this account. Filters will appear after trades are saved or migrated.')
+        return [],[],start,end,False
+    vessel=st.segmented_control('Vessel',['All',*POSITION_VESSELS],default='All',key=key+'_display_vessel') or 'All'
+    ships=[] if vessel=='All' else [vessel]
+    available=[t for t in trades if t['vessel'] in POSITION_VESSELS and (not ships or t['vessel'] in ships)]
+    if not available:
+        st.caption(f'No saved transactions for {vessel}.')
+        return ships,[],start,end,True
+    labels={t['contract']:f'{t["vessel"]} {t["label"]} · {t["product"]}' for t in available}
+    ids=list(labels)
+    contract_key=key+'_display_contracts'
+    previous=st.session_state.get(contract_key,[])
+    valid=[identity for identity in previous if identity in labels]
+    if previous!=valid:st.session_state[contract_key]=valid
+    a,b=st.columns([3,1])
+    contracts=a.multiselect('Contracts',ids,key=contract_key,format_func=labels.get,placeholder='All contracts')
+    period=b.selectbox('Period',['All dates','Custom dates'],key=key+'_display_period')
+    if period=='Custom dates':
+        date_key=key+'_display_dates'
+        remembered=st.session_state.get(date_key)
+        if remembered and any(not start<=d<=end for d in remembered):
+            st.session_state[date_key]=tuple(min(end,max(start,d)) for d in remembered)
+        dates=st.date_input('Display / export dates',value=(start,end),min_value=start,max_value=end,key=date_key)
+        if len(dates)==2:start,end=dates
+        elif len(dates)==1:start=end=dates[0]
+    return ships,contracts,start,end,vessel!='All' or bool(contracts) or period!='All dates'
 
 
 def position_management(loader,latest,refresh,data_version=None,synthetic=False):
@@ -99,20 +129,9 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     if status=='Red':st.error('Loss limit reached. Only reductions and closes are allowed; reversals are blocked.')
     elif status=='Yellow':st.warning('Account loss has reached 80% of the limit.')
     elif status=='Unknown':st.warning('Valuation is incomplete. Only reductions and closes are allowed until missing quotes or settlement are resolved.')
-    settings_col,filter_col=st.columns([1,3])
-    with settings_col:
-        limit=st.number_input('Loss limit (USD)',min_value=1.0,value=float(book['settings']['loss_limit']),step=1000.0,key=key+'_limit_'+str(book['settings']['loss_limit']))
-    filters=filter_col.toggle('Filters',key=key+'_filters')
-    ships=contracts=[];start=history.Date.min().date() if len(history) else asof.date();end=asof.date()
-    if filters:
-        a,b=st.columns(2)
-        ships=multi('Vessel',sorted({t['vessel'] for t in book['trades']}),key+'_vessel',[],4,container=a)
-        labels={t['contract']:f'{t["vessel"]} {t["label"]} · {t["product"]}' for t in book['trades']}
-        ids=[k for k in labels if not ships or next(t for t in book['trades'] if t['contract']==k)['vessel'] in ships]
-        contracts=multi('Contract',ids,key+'_contract',[],max(1,len(ids)),container=b,format_func=labels.get)
-        dates=st.date_input('Display / export dates',value=(start,end),min_value=start,max_value=end,key=key+'_dates')
-        if len(dates)==2:start,end=dates
-        elif len(dates)==1:start=end=dates[0]
+    limit=st.columns([1,3])[0].number_input('Loss limit (USD)',min_value=1.0,value=float(book['settings']['loss_limit']),step=1000.0,key=key+'_limit_'+str(book['settings']['loss_limit']))
+    first=history.Date.min().date() if len(history) else asof.date()
+    ships,contracts,start,end,filters=display_filters(book['trades'],first,asof.date(),key)
     selected=[t for t in book['trades'] if (not ships or t['vessel'] in ships) and (not contracts or t['contract'] in contracts)]
     current,full,percontract=valued(account,selected,end,version,fixed)
     if len(percontract):
@@ -136,7 +155,8 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     common={'account':account,'session':state.setdefault('session',uuid.uuid4().hex),'today':str(today),'trades':book['trades'],'catalog':list(catalog.values()),'writable':bool(repo and reader and writer and not synthetic),
             'last_quantity':last_quantity,'last_sync':state.get('last_sync'),'ack':state.get('ack'),'failure':state.get('failure'),
             'settings_change':{'base':book['settings']['loss_limit'],'value':float(limit)} if limit!=book['settings']['loss_limit'] else None}
-    entry=grid(data={**common,'mode':'entry','visible':[]},key=key+'_entry',default={'batch':None},on_batch_change=lambda:None)
+    entry_catalog=[c for c in catalog.values() if c['vessel'] in POSITION_VESSELS]
+    entry=grid(data={**common,'catalog':entry_catalog,'mode':'entry','visible':[]},key=key+'_entry',default={'batch':None},on_batch_change=lambda:None)
     st.subheader('P&L Performance')
     shown=full[full.Date.between(pd.Timestamp(start),pd.Timestamp(end))] if len(full) else full
     if len(shown):

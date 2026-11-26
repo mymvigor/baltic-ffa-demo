@@ -1,5 +1,6 @@
 from copy import deepcopy
 import base64,json
+import pandas as pd
 import pytest
 from ffa.positions import empty_book,calculate
 from ffa.position_sync import contract_catalog,build_batch,sync_batch,raw_trade,validate_changes
@@ -116,3 +117,15 @@ def test_contract_choices_prioritize_active_monthly_and_latest_quotes():
         row=fixed.iloc[0].to_dict();row.update(identity=identity,tenor=tenor,delivery_start=start,delivery_end=end,quote_day=date);rows.append(row)
     catalog=contract_catalog(frame(rows),today='2026-11-26')
     assert list(catalog)==['recent-month','next-month','stale-month','quarter','year','expired']
+
+
+def test_no_cape_in_new_choices_existing_records_remain_editable():
+    from ffa.analytics import frame
+    fixed=quotes();cape=fixed.assign(identity='cape',vessel='CAPE',product='C5TC')
+    combined=frame(pd.concat([fixed,cape],ignore_index=True).to_dict('records'))
+    assert all(c['vessel']!='CAPE' for c in contract_catalog(combined).values())
+    old={**trade(1,'Buy',1,100),'id':'cape-old','contract':'cape','vessel':'CAPE','product':'C5TC'}
+    catalog=contract_catalog(combined,[old])
+    assert 'cape' in catalog # historical metadata is preserved, never deleted
+    payload={'edits':event(catalog,'cape-new',Contract=catalog['cape']['search']),'deletes':{}}
+    with pytest.raises(ValueError,match='not enabled'):build_batch(empty_book(),payload,catalog,'2026-11-07')
