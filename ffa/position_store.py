@@ -1,4 +1,4 @@
-"""Explicit-save private ledger on its own Git branch; optimistic three-way merging."""
+"""Private ledger on its own Git branch; optimistic, idempotent batch commits."""
 import base64
 from copy import deepcopy
 import json
@@ -48,6 +48,12 @@ def merge(base, local, remote):
         if value is not None:trades.append(value)
     output['trades']=ordered(trades)
     output['settings']=field(base.get('settings',{}),local.get('settings',{}),remote.get('settings',{}))
+    for name in ('batches','migrations'):
+        combined=deepcopy(remote.get(name,{}))
+        for k in set(base.get(name,{}))|set(local.get(name,{})):
+            value=field(base.get(name,{}).get(k),local.get(name,{}).get(k),remote.get(name,{}).get(k))
+            if value is not None:combined[k]=value
+        if combined:output[name]=combined
     return output
 
 
@@ -64,13 +70,15 @@ def ensure_branch(store, branch):
     if result.status_code not in (201,422):raise RuntimeError('Could not create the position storage branch.')
 
 
-def save(store, base, local, branch=DEFAULT_BRANCH, validate=None):
-    """Called only by explicit Save. Revalidate merged account risk before each write."""
+def save(store, base, local, branch=DEFAULT_BRANCH, validate=None, batch_id=None):
+    """One checked batch per commit. A lost response can be retried safely."""
     ordered(local['trades']);ensure_branch(store,branch)
     for _ in range(3):
         remote,sha=load(store,branch)
+        if batch_id and batch_id in remote.get('batches',{}):return remote,sha
         value=merge(base,local,remote)
         if validate is not None:validate(remote,value)
+        value['trades']=ordered(value['trades'])
         if value==remote:return remote,sha
         content=json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode('utf-8')
         if len(content)>15*1024*1024:raise ValueError('Position ledger exceeds the supported size.')
