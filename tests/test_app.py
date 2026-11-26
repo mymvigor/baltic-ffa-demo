@@ -16,7 +16,7 @@ def app(monkeypatch):
 def test_existing_sections_and_open_charts(app, vessel):
     app.sidebar.radio[0].set_value(vessel).run()
     assert not app.exception
-    assert not app.dataframe
+    assert app.dataframe
     plots = app.get("plotly_chart")
     assert len(plots) >= 3
     rendered = " ".join(item.value for item in app.markdown)
@@ -42,9 +42,10 @@ def test_unified_forward_views(app):
     assert not app.exception
     next(w for w in app.get("segmented_control") if w.label == "Analysis").set_value("Heatmap").run()
     assert not app.exception
-    assert not app.dataframe
+    assert app.dataframe
 
 def test_research_navigation_and_timestamp_guard(app):
+    next(w for w in app.toggle if w.label=='Enable custom analysis').set_value(True).run()
     for name in ('Correlation Matrix','Rolling Correlation','Lead/Lag Correlation'):
         next(w for w in app.get('segmented_control') if w.label=='View').set_value(name).run()
         assert not app.exception

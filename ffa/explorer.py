@@ -4,6 +4,7 @@ import streamlit as st
 
 from .analytics import monthly_spot, options, period_means, seasonal, timeline, unit_label
 from .preferences import choice, multi, toggle
+from .quote_views import window, changes, bars
 from .series import inventory,select_series,source_frame,basis_frame,calendar_index,calendar_axis,reference_year
 from .ui import FREQUENCIES, chart, date_axis, display, draw_segments, mark_rolls, rolling_leg, series_name
 
@@ -74,6 +75,7 @@ def explorer(load, bounds, first, last, key):
     overlay = axis == "Calendar Overlay"
     frequencies = list(FREQUENCIES)
     frequency = choice("Frequency", frequencies, key + "_freq", control="segmented_control")
+    chart_mode='Price'
     with st.popover("Advanced Settings"):
         wide = toggle("Include other benchmarks", key + "_wide")
         kinds = multi("Series types", ["Spot", "Spot monthly mean", "Fixed", "Rolling"], key + "_kinds",
@@ -94,6 +96,8 @@ def explorer(load, bounds, first, last, key):
     if not selected:
         st.caption("Add a series to the chart.")
         return
+    if mode=='Absolute' and frequency=='Daily' and all(leg[-1]!='monthly' for leg in selected):
+        chart_mode=choice('Chart',['Price','Daily Change'],key+'_chart','Price',control='segmented_control')
     units = {leg[3:5] for leg in selected}
     if len(units) != 1 and mode!='Basis %':
         st.info("Choose series with the same quote unit.")
@@ -188,7 +192,7 @@ def explorer(load, bounds, first, last, key):
                 fields.append("Reference observed")
                 hover="Series: %{customdata[0]}<br>Base: %{customdata[1]}<br><b>%{y:,.3~f}</b>"
             draw_segments(fig, data, "price", label, trace_index, hover,
-                          fields, level=frequency == "Daily" and not overlay)
+                          fields, level=frequency == "Daily" and not overlay) if chart_mode=='Price' else bars(fig,changes(data),label)
             if overlay or frequency != "Daily":
                 mark_rolls(fig, rolls, name=label, index=trace_index, seasonal_axis=overlay)
             trace_index += 1
@@ -200,9 +204,14 @@ def explorer(load, bounds, first, last, key):
         lo,hi=min(observed_x),max(observed_x)
         calendar_axis(fig,(lo,hi))
         fig.update_xaxes(title='Calendar overlay · Y+0 is the delivery year (Spot: quote year)')
+        limits=window(lo,hi,key+'_overlay')
     else:
         actual_x=[pd.Timestamp(x) for trace in fig.data for x in trace.x if x is not None]
         date_axis(fig,(min(actual_x),max(actual_x)))
+        limits=window(min(actual_x),max(actual_x),key+'_actual')
+    if limits[0]>limits[1]:st.info('Choose a start date before the end date.');return
+    fig.update_xaxes(range=list(limits))
+    if chart_mode=='Daily Change':fig.add_hline(y=0,line_width=1,line_color='#abb9c4')
 
     if mode in ('Basis','Basis %'):
         fig.add_hline(y=0,line_dash='dot')

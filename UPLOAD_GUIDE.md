@@ -1,5 +1,27 @@
 # 本次更新的上传位置
 
+## 2026-11-26：自动相关性、近期行情与持仓管理
+
+本地前台包已增加默认四张 Correlation 热力图，以及独立的 Position Management。Forecast 计算和既有研究能力保留。Spot / Price Explorer 恢复默认3M时间范围；原始日价格可切换红绿 Daily Change，同页提供5D/10D/20D近期报价表。
+
+本轮主要上传 **FFA-upload-ready.zip** 到公开前台仓库；必须连同 requirements.txt 和完整 ffa/ 目录一起更新，新增 openpyxl、tzdata，Streamlit 最低版本1.67用于按点击生成Excel。后台预测算法、本轮没有新增每日交易写入任务；私有更新包仍保留原后台分工。
+
+Position Management 的持久保存需要在 Streamlit Secrets 增加：
+
+```toml
+positions_repo = "mymvigor/baltic-ffa-dashboard"
+positions_branch = "ffa-positions"
+positions_writer_token = "<仅此私有仓库 Contents 读写权限令牌>"
+```
+
+默认沿用 github_reader_token 读取；如需分开可配置 positions_reader_token。令牌只放服务端，不写入仓库。首次点击 Save to GitHub 才创建独立分支并保存交易；普通控件、Refresh、Excel导入到草稿和版本预览都不写入GitHub。并发独立记录合并，相同交易冲突则保留草稿并提示。未配置时为会话草稿；演示行情模式不会读写真实私有账户。单账户共享给获准访问看板的用户，请保持应用访问权限私有。
+
+风险按整个账户计算，默认累计亏损$25,000，80%黄色、100%红色。支持移动加权成本、多空、部分平仓、反向及历史修改。红色或估值不完整时禁止增加敞口，减仓和平仓保留；导入批次的中间反向也不能绕过限制。此限制作用于本模拟工具，不是券商端交易限制。
+
+Days仅适用于USD/day合约；其他单位不会被当作天数。仅对已核验日历且Spot完整的月度TC合约自动重建实际结算，未核验季度/年度或缺失数据的到期持仓显示 Settlement pending，需要补充正式结算来源和对应规则，不能拿最后报价冒充结算价。
+
+本地真实行情副本截至2026-11-13：本轮自动相关性20项、四船型持仓及报价20项独立核算通过；另有手算多空及交易、Excel、并发冲突和针对性交互检查。没有使用真实GitHub写令牌执行线上保存/恢复，也没有上传、采集或改写真实预测记录。
+
 本次没有执行上传或部署。两个更新包用途不同，请按包名上传，解压时保留目录结构。
 
 1. `FFA-upload-ready.zip`：前台看板代码，上传至 **mymvigor/baltic-ffa-demo** 的 main 根目录。包含 app.py 和完整 ffa 文件夹。

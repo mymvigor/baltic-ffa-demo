@@ -15,12 +15,15 @@ from ffa.preferences import calendar, choice, multi, persist_preferences, restor
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
 from ffa.correlation import correlation_view
+from ffa.auto_correlation import automatic_correlation_view
 from ffa.explorer import explorer
 from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
 from ffa.workspace import MarketWorkspace
 from ffa.predictive_ui import predictive_view
 from ffa.forecast_ui import unified_forecast
+from ffa.quote_views import window, recent_bfa
+from ffa.position_ui import position_management
 
 st.set_page_config(page_title="Baltic FFA | Market Monitor", layout="wide", initial_sidebar_state="auto")
 
@@ -165,7 +168,11 @@ def main():
     with st.sidebar:
         st.markdown("### Baltic FFA")
         st.caption("DRY FREIGHT RESEARCH")
-        vessel = choice("Vessel class", VESSELS, "vessel", "PMX", control="radio", format_func=VESSELS.get)
+        destinations={**VESSELS,'POSITIONS':'Position Management'}
+        selected_page=choice('Navigation',destinations,'vessel','PMX',control='radio',format_func=destinations.get)
+        navigation='Position Management' if selected_page=='POSITIONS' else 'Market Dashboard'
+        vessel=st.session_state.get('_last_market_vessel','PMX') if selected_page=='POSITIONS' else selected_page
+        if selected_page!='POSITIONS':st.session_state['_last_market_vessel']=vessel
         benchmark_area = st.container()
         if live:
             dispatch_token = st.secrets.get("github_actions_token")
@@ -221,8 +228,8 @@ def main():
     source = "Baltic Exchange assessments" if live else "Synthetic demonstration data"
     products = sorted(market_data["product"].unique())
     preferred = default_product(market_data, vessel)
-    product = choice("Benchmark", products, f"{vessel}_benchmark", preferred, container=benchmark_area)
-    st.markdown(
+    product = choice("Benchmark", products, f"{vessel}_benchmark", preferred, container=benchmark_area) if navigation=='Market Dashboard' else preferred
+    if navigation=='Market Dashboard':st.markdown(
         f'<div class="ffa-hero"><div class="ffa-kicker">Market monitor / Dry bulk</div>'
         f'<h1 class="ffa-title">{VESSELS[vessel]} · {html.escape(product)}</h1>'
         f'<div class="ffa-meta">{source} &nbsp;·&nbsp; Latest class quote {quote_day:%d %b %Y}</div></div>',
@@ -298,6 +305,19 @@ def main():
         source=module_workspace(module) if module else workspace
         return source.view(vessel,product,start,end,load_window,wide=wide,seasonal=seasonal)
 
+    if navigation=='Position Management':
+        @st.fragment
+        def account_panel():
+            def account_loader(start,end):
+                all_starts=[pd.Timestamp(d).date() for products0 in archive.get('first_dates',{}).values() for d in products0.values()]
+                initial=min([fixed.quote_day.min().date(),*all_starts]) if start is None else start
+                return inputs(initial,end,wide=True,module='positions').fixed
+            position_management(account_loader,lambda:module_workspace('positions').fixed.quote_day.max().date(),panel_refresh,
+                                lambda:module_workspace('positions').revision,synthetic=not live)
+        account_panel()
+        persist_preferences('global')
+        return
+
     @st.fragment
     def spot_panel():
         section(2, "Spot Market", "Spot trends and seasonal comparisons.")
@@ -306,7 +326,7 @@ def main():
         current_last=panel_last("spot")
         study = choice("Spot view", ["Trend", "Seasonality"], key + "_view", control="segmented_control")
         if study == "Trend":
-            bounds = (first,current_last)
+            bounds = tuple(d.date() for d in window(first,current_last,key))
             if bounds[0] <= bounds[1]:
                 view = inputs(*bounds,seasonal=True,module="spot")
                 spot_analysis(view.local, view.days, tuple(pd.Timestamp(day) for day in bounds), key)
@@ -375,6 +395,8 @@ def main():
         if study == "Price Explorer":
             loader=lambda *args,**kwargs:inputs(*args,module="forward",**kwargs)
             explorer(loader,(pd.Timestamp(first),pd.Timestamp(panel_last("forward"))),first,panel_last("forward"),key)
+            quotes=inputs(max(first,panel_last('forward')-timedelta(days=150)),panel_last('forward'),module='forward')
+            recent_bfa(quotes.fixed,panel_last('forward'),key)
         elif study == "Forward Curve":
             curve_panel()
         else:
@@ -401,8 +423,12 @@ def main():
         key = f"{vessel}_correlation_{product}"
         refresh_version=panel_refresh("correlation")
         current_last=panel_last("correlation")
-        loader=lambda start,end,wide=False:inputs(global_first if wide else start,end,wide=wide,module="correlation")
-        correlation_view(loader,first,current_last,key)
+        loader=lambda start,end,wide=False:inputs(start,end,wide=wide,module="correlation")
+        automatic_correlation_view(loader,first,current_last,key,(stamp,refresh_version),vessel,product,BENCHMARKS)
+        with st.expander('Custom correlation analysis'):
+            if toggle('Enable custom analysis',key+'_custom'):
+                custom_loader=lambda start,end,wide=False:inputs(global_first if wide else start,end,wide=wide,module='correlation')
+                correlation_view(custom_loader,first,current_last,key+'_custom_view')
         with st.expander('Existing signal validation'):
             if toggle('Show Spot/BFA out-of-sample validation',key+'_backtest'):
                 start=max(first,current_last-timedelta(days=365*5))

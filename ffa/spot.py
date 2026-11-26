@@ -4,6 +4,7 @@ import streamlit as st
 
 from .analytics import indicators, monthly_spot, seasonal, timeline, unit_label
 from .preferences import choice, toggle
+from .quote_views import changes, bars, recent_spot
 from .ui import COLORS, VALUE_HOVER, bollinger_history, chart, date_axis, display, draw_segments, mark_rolls, series_name
 
 
@@ -39,15 +40,20 @@ def spot_analysis(local, days, bounds, key):
     st.caption(f"{unit} · Latest visible Spot assessment {visible.index[-1]:%d %b %Y}. "
                "Lines join observed Spot points across closures; missing quotes are not filled. "
                "Moving averages count valid quotation days.")
-    st.markdown("**Spot · MA5 / MA20 · Bollinger bands**")
+    mode=choice('Chart',['Price','Daily Change'],key+'_chart','Price',control='segmented_control')
+    st.markdown("**Spot · MA5 / MA20 · Bollinger bands**" if mode=='Price' else '**Spot · Daily Change**')
     fig = chart(unit, height=440)
-    for column, name, index in (("lower","Lower band",3),("upper","Upper band",3),
-                                ("price", "Spot", 0), ("ma5", "MA5", 1), ("ma20", "MA20", 2)):
+    if mode=='Daily Change':
+        bars(fig,changes(data).loc[bounds[0]:bounds[1]])
+        fig.add_hline(y=0,line_color='#abb9c4',line_width=1)
+    for column, name, index in (() if mode=='Daily Change' else (("lower","Lower band",3),("upper","Upper band",3),
+                                ("price", "Spot", 0), ("ma5", "MA5", 1), ("ma20", "MA20", 2))):
         draw_segments(fig,data.loc[bounds[0]:bounds[1]],column,name,index,VALUE_HOVER,
                       dash="dot" if column in ("lower","upper") else None)
     date_axis(fig,bounds)
     display(fig,key+"_trend")
-    st.caption("Bollinger bands: MA20 ± 2 population standard deviations. Click a legend entry to hide or restore a line.")
+    if mode=='Price':st.caption("Bollinger bands: MA20 ± 2 population standard deviations.")
+    recent_spot(data,key)
 
 
 def seasonality(local, days, years, key, spot_only=False):

@@ -108,3 +108,34 @@ Baselines are unchanged price, h times the current BFA change, and a BFA-only Ri
 The inventory loads available historical contracts independently of chart display bounds. Search labels include DEC26, JAN27, Q127 and CAL27, category, delivery year and tenor; active nearby contracts are prioritized. Explicit Spot/Rolling year entries allow quick seasonal comparisons. The same labels are reused in Forecast and research selectors.
 
 Actual Date preserves actual quote dates. Calendar Overlay shifts an entire fixed contract history by its delivery year, so DEC26/DEC25 and JAN27/JAN26 preserve cross-year lead-in periods and overlay at the same seasonal position. Spot/Rolling year entries align by quote year. Original dates remain on hover; differences/ratios compare exact aligned dates with compatible units, then aggregate. Continuous multi-year Spot/Rolling entries require choosing a year for overlay arithmetic. No missing quotes are filled; rolling changes retain breaks and dated markers.
+
+## Automatic Correlation and recent market views
+
+Correlation opens with four independently cached heatmaps: Spot Historical, BFA Historical, Market and Predictive. Historical views automatically select the current and up to five usable prior years; the Price Levels / Price Changes switch affects those two views. Market uses daily absolute changes, and Predictive screens seven existing factors against future 1/5/10/20-session changes. Only the predictive BFA target needs a contract picker. All heatmaps use −1 to +1 centered at zero, show sample counts/source dates on hover, and leave insufficient cells blank. Custom analysis and the existing out-of-sample research remain optional. These screens are candidate research, not proof of predictive skill.
+
+Spot and Price Explorer default to a separate 3M display range, with 1M/3M/6M/1Y/All/Custom and the existing plain drag slider. Explorer inventory remains independent of display dates. Daily raw prices support Price / Daily Change in the same chart; roll changes are excluded. Spot Recent Quotes and Recent BFA Quotes offer 5D/10D/20D. BFA percentages use previous valid quotes of the same fixed contract, including the six quotes needed for 5D returns; missing cells stay blank. Quote dates disclose stale values. Forecast calculations and interactions are unchanged in this update.
+
+## Position Management
+
+Choose Position Management in the sidebar. Its single account has Overview, Positions and Transactions. All vessel fixed contracts share searchable labels. + Trade opens a short form; Apply to draft recalculates locally. Editing an old fill replays the ledger. Days-based P&L supports USD/day TC contracts only: another quote unit is never silently converted into days.
+
+Moving weighted-average cost applies separately per fixed contract. Closing signed days realizes `closed days × (exit − average cost) × prior position sign`; a reversal opens only its residual at the new fill price. Fees are immediately realized once. Unrealized P&L is `signed days × (mark − average cost)`. Daily P&L is the difference of cumulative realized-plus-unrealized totals at consecutive valuation dates. All calculations replay opening history before applying display filters. A prior quote retains its actual date; missing marks do not become zero. A verified, complete monthly TC publication calendar permits actual Spot settlement; missing calendar/data or unverified quarterly/yearly settlement stays **Settlement pending**, with no invented final P&L. Official quarter/year settlement data and venue-specific rules must be supplied before those expired exposures can be fully valued.
+
+The whole-account loss limit defaults to $25,000 (yellow 80%, red 100%), unaffected by display filters. Red or incomplete account valuation allows only reductions/closes. Cross-contract netting and intermediate reversal in an import batch do not bypass the restriction. This is a simulation control, not a broker/exchange trading lock.
+
+### Private storage setup
+
+Add server-side Streamlit secrets; never add tokens to the public repository:
+
+```toml
+# Defaults to the existing private github_repo and github_reader_token.
+positions_repo = "mymvigor/baltic-ffa-dashboard"
+positions_branch = "ffa-positions"
+positions_writer_token = "<private repository Contents read/write token>"
+# Optional separate read-only credential:
+# positions_reader_token = "<private repository Contents read token>"
+```
+
+Only **Save to GitHub** writes `positions/account.json` on the separate branch. Its first save can create that branch from the private repo default branch; it never writes market or forecast paths. Concurrent independent fills merge using a SHA-checked three-way update; conflicting edits retain the draft and require reconciliation. Account settings → Load saved versions → Restore version to draft previews a restore; a subsequent Save creates a new revision, preserving old commits. Without credentials, trades are session-only drafts and can be exported, not durable records. Protect the app with private access/authentication: the single account is shared with every authorized app visitor, rather than protected by a trader selector.
+
+Excel import accepts `.xlsx`, optional trader filtering, column mapping, exact searchable contract families, original Excel/ISO dates, and duplicate/error checks before applying to draft. Ambiguous dates/contracts are rejected. The report includes Daily Report, P&L History, Transaction History and BFA Prices; opening positions/cost history and actual mark dates are retained. Publication timestamps are ISO text with timezones, and user strings are never exported as executable formulas. Reports and on-screen valuations call the same ledger engine. Large history/import reads occur only in Position Management; other market modules do not compute account P&L.
