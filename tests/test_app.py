@@ -20,7 +20,7 @@ def test_existing_sections_and_open_charts(app, vessel):
     plots = app.get("plotly_chart")
     assert len(plots) >= 3
     rendered = " ".join(item.value for item in app.markdown)
-    positions = [rendered.index(name) for name in ("Forecast</h2>", "Spot Market</h2>", "Forward Market</h2>", "Market Research</h2>")]
+    positions = [rendered.index(name) for name in ("Forecast</h2>", "Spot Market</h2>", "Forward Market</h2>", "Correlation</h2>")]
     assert positions == sorted(positions)
     assert not any(w.label == "Market view" for w in app.sidebar.radio)
     assert any({"Spot","MA5","MA20"}.issubset({t.get("name") for t in json.loads(p.proto.spec)["data"]}) for p in plots)
@@ -45,13 +45,14 @@ def test_unified_forward_views(app):
     assert not app.dataframe
 
 def test_research_navigation_and_timestamp_guard(app):
-    navigate(app,"Market Research")
+    for name in ('Correlation Matrix','Rolling Correlation','Lead/Lag Correlation'):
+        next(w for w in app.get('segmented_control') if w.label=='View').set_value(name).run()
+        assert not app.exception
+    next(w for w in app.toggle if w.label=='Show Spot/BFA out-of-sample validation').set_value(True).run()
     next(w for w in app.radio if w.label == "Validation").set_value("Verified timestamps").run()
     assert any("availability timestamps" in w.value for w in app.info)
     next(w for w in app.radio if w.label == "Validation").set_value("Date replay").run()
-    for name in ("Lead / lag","Forecast backtest","Relationships"):
-        next(w for w in app.get("segmented_control") if w.label == "Research view").set_value(name).run()
-        assert not app.exception
+    assert not app.exception
 
 def test_forecast_uses_sample_guard_on_demo(app):
     navigate(app,"Forecast")

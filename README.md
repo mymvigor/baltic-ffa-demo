@@ -1,5 +1,23 @@
 # Baltic FFA Dashboard
 
+## Basis and Correlation update
+
+The four page sections are Forecast, Spot Market, Forward Market and Correlation. If the live page still says Market Research, it is not this version.
+
+Price Explorer adds Basis / Basis % modes to the same main chart and Series/Time Axis/Frequency controls. Basis = BFA − same-date compatible Spot; Basis % = 100 × Basis / positive Spot. Positive values mean forward premium, negative values discount, with no undervaluation or zero-terminal-basis claim. Absolute basis needs compatible quote units; percentage bases can compare dimensionless relative premiums. Original prices and dates remain available, and rolls stay unadjusted with breaks/markers.
+
+Each selected basis has a compact latest level/change caption and annual historical context: one closest real observation per prior quote year, within ±7 calendar days, same benchmark/unit/tenor, delivery season for fixed contracts and exact integer months to delivery. Percentiles exclude the current observation, use midranks for ties and require five annual counterparts. These are descriptive, not trading probabilities. In-delivery monthly contracts may show (all settlement sessions × BFA − published Spot sum) / remaining sessions, only with supported contract rules and a verified complete calendar. Missing known Spot prevents the estimate. Forecast settlement minus current BFA is labelled Valuation Gap, not basis. Quarter/year remaining-Spot estimates are not inferred.
+
+Correlation reuses the searchable inventory, source frames, seasonal coordinates and date-axis components. Core controls are Series, Alignment, Data Type, Frequency and View. Cross-benchmark loading is optional in Series scope. Factor values are computed only for selected entries; choosing two raw compatible BFA legs offers their near-minus-far Spread in the same Series picker, without generating a quadratic menu. Existing OOS validation is explicitly enabled under Existing signal validation; ordinary correlations do not train a new model. No new regression or PCA is added.
+
+Objects include raw Spot/Fixed/Rolling, explicit Spot/Rolling quote years, Basis, Basis %, Basis Change, MA5, MA20, MA5 − MA20, Momentum 5D and Volatility 20D. MA counts valid same-contract quotes; momentum requires five complete intervening native sessions; volatility is the sample SD of twenty absolute same-contract daily changes, not annualized. Data Type applies to the selected factor too; Price / Level retains factor values directly. Percentage changes require positive prior levels.
+
+Matrix prefers all-series common valid samples; when weekday/coverage differences leave fewer than 30 shared observations, it uses exact pairwise valid dates and shows N per cell, without ranking coefficients from different samples. Rolling correlations use the selected rolling period and at least min(30, window) paired observations, with endpoint source dates and N on hover. One or a few rolling estimates cannot establish stability. Level correlation carries a shared-trend/contract-repricing caution; change and future-label calculations exclude roll jumps and do not fill quotes.
+
+Lead/Lag uses Signal(t) versus Target(t+h) − Target(t), h=1/5/10/20 actual assessment sessions. The target must be a raw price series; factors may be signals. Percent mode uses the corresponding positive-base return. Complete native target paths in one fixed contract are required before seasonal mapping; missing quotes never shorten h. Common mature samples are used across horizons when sufficient. Otherwise valid shorter horizons remain visible with their own N, and unequal samples are not ranked. Overlapping labels, shared price inputs, multiple comparisons and unknown publication vintages preclude treating the displayed r as proven predictive ability.
+
+Calendar Overlay preserves relative delivery years and matching fixed delivery seasons. Historical-only selections are also cut at the current seasonal position. Spot/Rolling year entries align with a selected fixed contract's reference year offset. Raw continuous Spot/Rolling entries use their latest observed quote year in correlation overlay; explicit year entries select older years. Weekly/monthly overlay bins are formed AFTER mapping daily observations to common seasonal positions; original source dates remain metadata. Periods spanning a contract roll are excluded. Lead/Lag always uses daily native assessment calendars, so Frequency is hidden there.
+
 ## Streamlined controls and scientific boundaries
 
 Forecast core controls are Target, BFA Contract, Model (Difference / Ratio / Exploratory), Reference Years, Reference Window and Prediction Horizon. Forecast Through, duplicate Evaluation Horizon, weighting/year-policy/partition controls, score-details popovers and a separate settlement-month selector were removed from the current UI. BFA paths use the remaining contract window; Spot defaults to three months. The selected target determines the integrated Spot settlement month. Exploratory uses the last selected basic model and remembers that choice; subjective strength changes its prospective scenario, never retrospectively inventing factor history. Genuine issue records remain immutable.
@@ -27,7 +45,7 @@ All four modules appear on one page, with global vessel and benchmark selection:
 1. **Forecast:** Spot Forecast and BFA Forecast use seasonal Difference/Ratio paths; monthly settlement estimates are integrated into Spot Forecast.
 2. **Spot Market:** one Spot / MA5 / MA20 / Bollinger trend chart, plus seasonal comparison. Legend clicks replace redundant line-display buttons.
 3. **Forward Market:** one Price Explorer for prices, normalization, differences, ratios and calendar overlays, plus Forward Curve and Repricing views.
-4. **Market Research:** daily changes, lead/lag, short-horizon BFA validation and relationships.
+4. **Correlation:** a shared Matrix / Rolling / Lead-Lag tool, with the existing Spot/BFA OOS study available on demand.
 
 Charts use the full content width without data tables. Selected views load on demand. Date charts include a plain bottom double-ended draggable range slider with the miniature traces hidden, pan/zoom/reset and stable per-chart UI state. Legends and range buttons occupy separate bands. Every module has a local Refresh that rereads saved quotes and invalidates that module's computations without starting data collection or resetting other modules. Low-frequency date/history settings are in popovers.
 
@@ -70,7 +88,7 @@ Run `python -m pytest -q` for synthetic calculation, history-cache and Streamlit
 
 ## Spot → BFA validation
 
-Market Research switches between daily absolute changes (USD/day), lead/lag research, forecast backtests and relationships. The research views keep each fixed contract separate; only one benchmark/quote unit is allowed. All charts remain full-width, with no added data tables. Long research training history loads only when required and is cached by exact source revisions and scope.
+Legacy research implementations are retained in source; their separate Daily Changes, Lead/Lag and Relationships navigation is no longer shown. The current fourth module is Correlation. The research views keep each fixed contract separate; only one benchmark/quote unit is allowed. All charts remain full-width, with no added data tables. Long research training history loads only when required and is cached by exact source revisions and scope.
 
 Research defaults to clearly labelled **Date replay**, **Historical peers**, **M+1** and a **3Y** window, so the initial view has useful validation coverage. Select **Selected contract** to inspect one fixed delivery separately. **Verified timestamps** and contract type are available in **Research settings**; methodology is under **Method notes**. Price-history defaults are unchanged. Small-sample thresholds and leakage controls are unchanged.
 

@@ -248,7 +248,7 @@ def settlement_view(quotes, revision, vessel, benchmark, key, synthetic=False):
     a, b, c = st.columns(3)
     a.metric("Forecast Settlement", show_money(price))
     b.metric("Current BFA", show_money(bfa))
-    c.metric("Forecast − BFA", show_money(price-bfa))
+    c.metric("Valuation Gap", show_money(price-bfa))
     if pd.notna(price) and pd.notna(bfa) and bfa > 0:
         outlook = "higher settlement than current BFA" if price-bfa > 1 else "lower settlement than current BFA" if price-bfa < -1 else "settlement near current BFA"
         st.markdown(f"**Model view: {outlook}** · {(price/bfa-1):+.1%}.")

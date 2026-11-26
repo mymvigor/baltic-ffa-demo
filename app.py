@@ -11,10 +11,10 @@ from ffa.analytics import frame
 from ffa.demo import data as demo_data
 from ffa.history import read_history, read_manifest
 from ffa.model import VESSELS
-from ffa.preferences import calendar, choice, multi, persist_preferences, restore_preferences
+from ffa.preferences import calendar, choice, multi, persist_preferences, restore_preferences, toggle
 from ffa.refresh import refresh_conclusion, start_refresh
 from ffa.store import connect, market
-from ffa.research import comparison_studies, historical_context
+from ffa.correlation import correlation_view
 from ffa.explorer import explorer
 from ffa.ui import TENORS, curve_changes, curves, section
 from ffa.spot import seasonality, spot_analysis
@@ -397,25 +397,18 @@ def main():
 
     @st.fragment
     def research_panel():
-        section(4, "Market Research", "Short-horizon BFA moves and market relationships.")
-        key = f"{vessel}_research_{product}"
-        refresh_version=panel_refresh("research")
-        current_last=panel_last("research")
-        study = choice("Research view", ["Daily changes", "Lead / lag", "Forecast backtest", "Relationships"],
-                       key+"_view", control="segmented_control")
-        long_history = study in ("Lead / lag", "Forecast backtest")
-        bounds = assessment_window(first,current_last,key+study,research=long_history)
-        if bounds[0] > bounds[1]:
-            st.info("Choose a start date before the end date.")
-        else:
-            start = max(first, bounds[0] - timedelta(days=730)) if long_history else bounds[0]
-            view = inputs(start,current_last if study!="Relationships" else bounds[1],module="research")
-            timestamps = tuple(pd.Timestamp(day) for day in bounds)
-            if study == "Relationships":
-                basis, spreads = comparison_studies(view.local, view.days)
-                historical_context(view.local, view.days, basis, spreads, timestamps, key)
-            else:
-                predictive_view(view.fixed, timestamps, key+"_predictive", study, (stamp,start,current_last,refresh_version))
+        section(4, "Correlation", "Market relationships, seasonal analogies and potential leading signals.")
+        key = f"{vessel}_correlation_{product}"
+        refresh_version=panel_refresh("correlation")
+        current_last=panel_last("correlation")
+        loader=lambda start,end,wide=False:inputs(global_first if wide else start,end,wide=wide,module="correlation")
+        correlation_view(loader,first,current_last,key)
+        with st.expander('Existing signal validation'):
+            if toggle('Show Spot/BFA out-of-sample validation',key+'_backtest'):
+                start=max(first,current_last-timedelta(days=365*5))
+                view=inputs(max(first,start-timedelta(days=730)),current_last,module='correlation')
+                st.caption('Retained Spot/BFA walk-forward research; separate from correlations of the selected factors. No new regression or PCA model is added.')
+                predictive_view(view.fixed,(pd.Timestamp(start),pd.Timestamp(current_last)),key+'_predictive','Forecast backtest',(stamp,start,current_last,refresh_version))
         persist_preferences(key)
 
     forecast_panel()

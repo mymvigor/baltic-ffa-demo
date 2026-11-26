@@ -267,4 +267,6 @@ def _settlement(fixed,path,info,key,target=None):
     estimate=values.mean()
     bfa=fixed[fixed.kind.eq("BFA")&fixed.tenor.eq("month")&fixed.delivery_start.eq(month.start_time)&fixed.quote_day.eq(info["asof"])]
     price=float(bfa.price.iloc[-1]) if not bfa.empty else np.nan
-    st.caption(f"{month} · Predicted monthly settlement {estimate:,.0f} · matching BFA {price:,.0f} · gap {estimate-price:+,.0f} USD/day. Reconstructed index mean; no unverified quarter/year aggregation.")
+    quoted=f'{price:,.0f}' if np.isfinite(price) else 'unavailable on the same date'
+    gap=f'{estimate-price:+,.0f} USD/day' if np.isfinite(price) else 'unavailable'
+    st.caption(f"{month} · Predicted monthly settlement {estimate:,.0f} · matching BFA {quoted} · Valuation Gap (forecast settlement − BFA) {gap}. Reconstructed index mean; no unverified quarter/year aggregation.")

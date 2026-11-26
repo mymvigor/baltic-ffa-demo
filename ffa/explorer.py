@@ -4,7 +4,7 @@ import streamlit as st
 
 from .analytics import monthly_spot, options, period_means, seasonal, timeline, unit_label
 from .preferences import choice, multi, toggle
-from .selection import contract_label
+from .series import inventory,select_series,source_frame,basis_frame,calendar_index,calendar_axis,reference_year
 from .ui import FREQUENCIES, chart, date_axis, display, draw_segments, mark_rolls, rolling_leg, series_name
 
 
@@ -69,7 +69,7 @@ def _aggregate(data, frequency, bounds):
 
 def explorer(load, bounds, first, last, key):
     axis = choice("Time Axis", ["Actual Date", "Calendar Overlay"], key + "_axis", control="segmented_control")
-    mode = choice("Compare Mode", ["Absolute", "Normalized", "Difference", "Ratio"], key + "_mode",
+    mode = choice("Compare Mode", ["Absolute", "Normalized", "Difference", "Ratio", "Basis", "Basis %"], key + "_mode",
                   control="segmented_control")
     overlay = axis == "Calendar Overlay"
     frequencies = list(FREQUENCIES)
@@ -83,76 +83,76 @@ def explorer(load, bounds, first, last, key):
     bounds=pd.Timestamp(first),pd.Timestamp(last)
     view = load(*(item.date() for item in bounds), wide=wide)
     series = options(view.fixed, view.rolling) if wide else view.local
-    candidates = {leg: item for leg, item in series.items()
-                  if (leg[2] if leg[2] == "Spot" else leg[6]) in kinds
-                  and item[1].quote_day.between(*bounds).any()}
-    labels={leg:(contract_label(item[1].iloc[0])+f" · {leg[1]}" if leg[6]=="Fixed" and leg[2]=="BFA" else f"{leg[2] if leg[2]=='Spot' else 'Rolling'} · {item[0]} · {leg[1]}")+f" · {unit_label(*leg[3:5])}" for leg,item in candidates.items()}
-    for leg,item in list(candidates.items()):
-        if leg[2]=="Spot" or leg[6]=="Rolling":
-            for year,part in item[1].groupby(item[1].quote_day.dt.year):
-                alias=(*leg,"year",str(year))
-                candidates[alias]=(item[0],part)
-                labels[alias]=f"{leg[2] if leg[2]=='Spot' else 'Rolling'}{year} · {item[0]} · {leg[1]} · {unit_label(*leg[3:5])}"
-    if "Spot monthly mean" in kinds:
-        for leg, item in series.items():
-            if leg[2] == "Spot" and item[1].quote_day.between(*bounds).any():
-                alias = (*leg, "monthly")
-                candidates[alias] = item
-                labels[alias] = f"{leg[1]} · Spot monthly mean · {unit_label(*leg[3:5])}"
+    active_kinds=([k for k in kinds if k in ('Fixed','Rolling')] or ['Fixed','Rolling']) if mode in ('Basis','Basis %') else kinds
+    candidates,labels=inventory(series,bounds,active_kinds)
+    if mode in ('Basis','Basis %'):
+        candidates={leg:item for leg,item in candidates.items() if leg[2]=='BFA'}
+        labels={leg:labels[leg] for leg in candidates}
     if not candidates:
-        st.info("No eligible series in this window.")
-        return
-    preferred = [leg for leg in candidates if leg[2] == "Spot" and len(leg) == 8][:1]
-    near = rolling_leg(series, "+1MON", preferred[0][3:5] if preferred else None)
-    if near in candidates:
-        preferred.append(near)
-    def priority(leg):
-        row=candidates[leg][1].iloc[-1]
-        if leg[2]=="Spot":return (0,len(leg)!=8,-int(leg[-1]) if len(leg)==10 else 0,labels[leg])
-        if leg[6]=="Rolling":return (1,len(leg)!=8,0,labels[leg])
-        return (2,row.delivery_end<pd.Timestamp(last),abs((row.delivery_start-pd.Timestamp(last)).days),labels[leg])
-    selected = multi("Series", sorted(candidates, key=priority), key + "_series",
-                     preferred or list(candidates)[:1], len(candidates), format_func=labels.get)
+        st.info("No eligible series in this window.");return
+    selected=select_series(candidates,labels,key+"_series",last)
     if not selected:
         st.caption("Add a series to the chart.")
         return
     units = {leg[3:5] for leg in selected}
-    if len(units) != 1:
+    if len(units) != 1 and mode!='Basis %':
         st.info("Choose series with the same quote unit.")
         return
-    if mode != "Absolute" and len(selected) < 2:
+    if mode in ("Normalized","Difference","Ratio") and len(selected) < 2:
         st.info("Add at least two series for comparison.")
         return
     base = choice("Base series", selected, key + "_base", selected[0], format_func=labels.get) if mode in ("Difference", "Ratio") else selected[0]
     sources = []
+    basis_reference,basis_year_offset=pd.Timestamp(last).year,0
+    if overlay and mode in ('Basis','Basis %'):
+        contracts=[leg for leg in selected if leg[6]=='Fixed']
+        seasons={(leg[5],candidates[leg][1].delivery_start.iloc[0].month,candidates[leg][1].delivery_end.iloc[0].month) for leg in contracts}
+        if len(seasons)>1:
+            st.info('Seasonal basis comparisons need matching delivery seasons and tenors. Use Actual Date for different maturities.');return
+        basis_reference,basis_year_offset=reference_year(contracts,candidates,pd.Timestamp(last))
     sessions = view.fixed.groupby(["vessel", "product"]).quote_day.unique()
     for leg in selected:
-        data = timeline(candidates[leg][1], pd.DatetimeIndex(sorted(sessions.loc[leg[:2]]))).loc[bounds[0]:bounds[1]]
-        if len(leg) == 9:
-            data = _monthly(data, bounds)
-            data["kind"] = "Spot"
-            data["roll_from"] = data["roll_to"] = None
+        data=source_frame(leg,candidates,sorted(sessions.loc[leg[:2]]),bounds)
         original=candidates[leg][1]
-        data=data.loc[original.quote_day.min():original.quote_day.max()]
-        data["Observed"]=data.index.strftime("%d %b %Y")
+        if mode in ('Basis','Basis %'):
+            spot_leg=next((k for k in series if k[:2]==leg[:2] and k[2]=='Spot' and k[3:5]==leg[3:5]),None)
+            if spot_leg is None:
+                st.info(f"No matching Spot for {labels[leg]}.");return
+            spot=timeline(series[spot_leg][1],data.index)
+            data=basis_frame(data,spot,mode=='Basis %')
         if overlay and mode!="Absolute":
             if leg[2]=="BFA" and leg[6]=="Fixed":anchor=original.delivery_start.iloc[0].year
-            elif len(leg)==10:anchor=int(leg[-1])
+            elif len(leg)==10:anchor=int(leg[-1])+(basis_year_offset if mode in ('Basis','Basis %') else 0)
             else:
                 st.info("For overlay calculations, select year-specific Spot or Rolling entries (e.g. Spot2025), or fixed contracts.")
                 return
             original_dates=data.index
-            mapped=original_dates+pd.DateOffset(years=2000-anchor)
-            leap=(original_dates.month==2)&(original_dates.day==29)&~mapped.is_leap_year
-            data.index=mapped+pd.to_timedelta(leap.astype(int)*12,unit="h")
+            data.index=calendar_index(original_dates,anchor)
         sources.append(data)
-    results, origin = compare_prices(sources, mode, selected.index(base)) if mode != "Absolute" else (list(enumerate(sources)), None)
-    y = {"Normalized": "Index · base 100", "Ratio": "Ratio"}.get(mode, unit_label(*selected[0][3:5]))
+    if overlay and mode in ('Basis','Basis %'):
+        observed=[s.dropna(subset=['price']) for s in sources]
+        if any(s.empty for s in observed):
+            st.info('No valid basis observations for one or more selected series.');return
+        common_start=max(s.index.min() for s in observed)
+        cutoff=calendar_index([pd.Timestamp(last)],basis_reference)[0]
+        common_end=min(cutoff,*[s.index.max() for s in observed])
+        if common_start>common_end:
+            st.info('No common seasonal basis interval for these selections.');return
+        sources=[s.loc[common_start:common_end] for s in sources]
+    if mode in ('Basis','Basis %'):
+        from .basis import basis_summary
+        for leg,source in zip(selected,sources):
+            context=source.copy()
+            if overlay:context.index=pd.DatetimeIndex(context.observed_day)
+            basis_summary(view.fixed,view.rolling,leg,candidates[leg][1],context,mode=='Basis %')
+    results, origin = compare_prices(sources, mode, selected.index(base)) if mode in ("Normalized","Difference","Ratio") else (list(enumerate(sources)), None)
+    y = {"Normalized": "Index · base 100", "Ratio": "Ratio", "Basis %":"Basis % of Spot"}.get(mode, unit_label(*selected[0][3:5]))
     fig = chart(y, height=390)
     trace_index = 0
     for index, raw in results:
         leg = selected[index]
         name = labels[leg]
+        if mode in ('Basis','Basis %'):name=f'{mode} · {name}'
         if mode in ("Difference", "Ratio"):
             name = f"{name} {'−' if mode == 'Difference' else '÷'} {labels[base]}"
         fixed_overlay=overlay and leg[2]=="BFA" and leg[6]=="Fixed"
@@ -198,13 +198,15 @@ def explorer(load, bounds, first, last, key):
     if overlay:
         observed_x=[pd.Timestamp(x) for trace in fig.data for x in trace.x if x is not None]
         lo,hi=min(observed_x),max(observed_x)
-        date_axis(fig,(lo,hi))
-        ticks=pd.date_range(lo.replace(day=1),hi+pd.offsets.MonthBegin(1),freq="MS")
-        fig.update_xaxes(tickvals=ticks,ticktext=[f"{d:%b} · Y{d.year-2000:+d}" for d in ticks],title="Calendar overlay · Y+0 is the delivery year (Spot: quote year)")
+        calendar_axis(fig,(lo,hi))
+        fig.update_xaxes(title='Calendar overlay · Y+0 is the delivery year (Spot: quote year)')
     else:
         actual_x=[pd.Timestamp(x) for trace in fig.data for x in trace.x if x is not None]
         date_axis(fig,(min(actual_x),max(actual_x)))
 
+    if mode in ('Basis','Basis %'):
+        fig.add_hline(y=0,line_dash='dot')
+        st.caption("Basis = BFA − Spot; Basis % = 100 × (BFA − Spot) / Spot. Positive = forward premium, negative = discount. A discount is not evidence of undervaluation; daily Spot basis need not converge to zero.")
     display(fig, key + "_main")
     if origin is not None:
         st.caption(f"Common base date {origin:%d %b %Y}. Only dates observed for every selected series are shown.")
