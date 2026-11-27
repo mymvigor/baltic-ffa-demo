@@ -11,9 +11,9 @@ from .position_store import load,DEFAULT_BRANCH,Conflict
 from .position_sync import contract_catalog,sync_batch,POSITION_VESSELS
 from .position_excel import report
 from .position_grid import grid
+from .position_pnl import contract_histories,account_pnl,contract_pnl
 from .store import connect
-from .quote_views import UP,DOWN,FLAT,signed_style,bars
-from .ui import chart,date_axis,display
+from .quote_views import UP,DOWN,FLAT,signed_style
 
 
 def rerender():
@@ -116,6 +116,10 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     asof=min(asof,pd.Timestamp(today))
     catalog=contract_catalog(fixed,book['trades'],today)
     positions,history,detail=valued(account,book['trades'],asof,version,fixed)
+    paths=contract_histories(detail)
+    if paths:
+        positions=positions.copy()
+        positions['Daily P&L']=positions['Contract ID'].map({identity:path['Daily P&L'].iloc[-1] for identity,path in paths.items()})
     status,_=risk_state(positions,book['settings']['loss_limit'])
     st.subheader('Account Overview')
     values=history.iloc[-1] if len(history) else {c:0.0 for c in ('Total P&L','Daily P&L','Realized P&L','Unrealized P&L')}
@@ -130,18 +134,8 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     elif status=='Yellow':st.warning('Account loss has reached 80% of the limit.')
     elif status=='Unknown':st.warning('Valuation is incomplete. Only reductions and closes are allowed until missing quotes or settlement are resolved.')
     limit=st.columns([1,3])[0].number_input('Loss limit (USD)',min_value=1.0,value=float(book['settings']['loss_limit']),step=1000.0,key=key+'_limit_'+str(book['settings']['loss_limit']))
-    first=history.Date.min().date() if len(history) else asof.date()
-    ships,contracts,start,end,filters=display_filters(book['trades'],first,asof.date(),key)
-    selected=[t for t in book['trades'] if (not ships or t['vessel'] in ships) and (not contracts or t['contract'] in contracts)]
-    current,full,percontract=valued(account,selected,end,version,fixed)
-    if len(percontract):
-        percontract=percontract.sort_values(['Contract ID','Date'])
-        percontract['Daily P&L']=percontract.groupby('Contract ID')['Total P&L'].diff()
-        firsts=percontract.groupby('Contract ID').head(1).index
-        percontract.loc[firsts,'Daily P&L']=percontract.loc[firsts,'Total P&L']
-        current=current.merge(percontract[percontract.Date.eq(pd.Timestamp(end))][['Contract ID','Daily P&L']],on='Contract ID',how='left')
     st.subheader('Open Positions')
-    opened=current[current['Net Position'].abs().gt(1e-9)].copy() if len(current) else current
+    opened=positions[positions['Net Position'].abs().gt(1e-9)].copy() if len(positions) else positions
     if len(opened):
         opened['Contract']=opened.apply(lambda r:f'{r.Vessel} {r.Contract}',axis=1)
         opened['Long/Short']=opened['Net Position'].map(lambda v:'Long' if v>0 else 'Short')
@@ -157,17 +151,13 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
             'settings_change':{'base':book['settings']['loss_limit'],'value':float(limit)} if limit!=book['settings']['loss_limit'] else None}
     entry_catalog=[c for c in catalog.values() if c['vessel'] in POSITION_VESSELS]
     entry=grid(data={**common,'catalog':entry_catalog,'mode':'entry','visible':[]},key=key+'_entry',default={'batch':None},on_batch_change=lambda:None)
-    st.subheader('P&L Performance')
-    shown=full[full.Date.between(pd.Timestamp(start),pd.Timestamp(end))] if len(full) else full
-    if len(shown):
-        fig=chart('USD',height=330);fig.add_scatter(x=shown.Date,y=shown['Total P&L'],name='Cumulative P&L',line_color=UP,connectgaps=False)
-        fig.add_hline(y=0,line_width=1);date_axis(fig,(pd.Timestamp(start),pd.Timestamp(end)));display(fig,key+'_cumulative')
-        fig=chart('USD',height=300);bars(fig,shown.set_index('Date').rename(columns={'Daily P&L':'change'}),'Daily P&L');date_axis(fig,(pd.Timestamp(start),pd.Timestamp(end)));display(fig,key+'_daily')
-        rank=current.sort_values('Total P&L');fig=chart(None,height=max(260,35*len(rank)))
-        fig.add_bar(y=[f'{r.Vessel} {r.Contract}' for _,r in rank.iterrows()],x=rank['Total P&L'],orientation='h',marker_color=[UP if v>=0 else DOWN for v in rank['Total P&L']])
-        fig.update_xaxes(title='Contract P&L · USD');display(fig,key+'_ranking')
-    else:st.caption('Performance appears after the first confirmed transaction.')
+    account_pnl(history,positions,key)
+    contract_pnl(paths,book['trades'],key)
     st.subheader('Trade History')
+    first=history.Date.min().date() if len(history) else asof.date()
+    st.caption('Filters apply to trade history and Excel export. Account and contract P&L always show the full ledger.')
+    ships,contracts,start,end,filters=display_filters(book['trades'],first,asof.date(),key)
+    selected=[t for t in book['trades'] if (not ships or t['vessel'] in ships) and (not contracts or t['contract'] in contracts)]
     visible=[t['id'] for t in reversed(selected) if pd.Timestamp(start)<=pd.Timestamp(t['date'])<=pd.Timestamp(end)]
     if not filters:visible=visible[:50]
     grid(data={**common,'mode':'history','visible':visible},key=key+'_history',default={'batch':None},on_batch_change=lambda:None)

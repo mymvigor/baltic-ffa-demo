@@ -2,13 +2,17 @@
 
 按最新要求：**填写后点击 Save changes 才整批提交；不进行10秒自动提交。**
 
+2026-11-27盈亏展示：Account P&L保留全账户累计曲线、每日红绿柱及原合约排名，不受流水筛选影响。Contract P&L对每个当前持仓自动展开一张组合图：上方Total / Realized / Unrealized曲线，下方Daily柱，共用日期轴。图前显示净持仓、成本、BFA及四项盈亏，默认从该合约首次交易起展示。
+
+全平合约移入Closed Positions折叠区域，展开时才生成其图表。重新建仓恢复原合约图和累计历史，不清零；日期标记区分Open / Close / Reopen / Reverse / Settlement，同日事件共享收盘盈亏点，不冒充盘中盈亏。所有图复用同一次账本估值，金额、费用及结算算法未改。原筛选放到Trade History，只影响流水和Excel导出；Open Positions、账户图和合约图始终显示完整的当前账户。
+
 2026-11-27筛选调整：移除Filters开关。有已保存交易时直接显示All / PMX / SMX / HDY、合约多选（留空表示全部）和All dates / Custom dates。切换船型会清除不适用的合约选择；空账户或该船型没有成交时不显示空下拉框，并说明原因。Position Management不提供Capesize新增交易，其他研究模块及已有历史记录保留。筛选不改成本、全账户盈亏及风险，不产生GitHub写入。
 
 本轮小幅调整：Trade Entry初始一行，点击Add row每次增加一个空行；支持继续批量粘贴，空行不会计为成交。录入表各列完整显示，窄屏自动换行，不再使用左右滚动。合约按未到期优先、月度优先、最新报价及近期交割排序，历史合约保留搜索。
 
 指定12笔成交的原始来源、Excel备份和核对结果现已直接放入本地私有项目 `migrations/position_b_20261125/`，不是仅在部署压缩包里；公开前台包不包含这些交易。按用户本轮选择，先完成本地修改，不执行线上写入。
 
-前台保持单页：Account Overview → Open Positions → Trade Entry → P&L Performance → Trade History。默认整个账户。日期、合约和船型筛选按需打开，风险仍按整个账户判断。
+前台保持单页：Account Overview → Open Positions → Trade Entry → Account P&L → Contract P&L → Trade History。默认整个账户。日期、合约和船型筛选用于流水及导出，风险仍按整个账户判断。
 
 Trade Entry支持连续录入、Excel多行粘贴、搜索Fixed合约；日期默认当天，Quantity首次5 days，随后记忆有效输入。USD/day按days计量时盈亏乘数为1，不再乘月份天数；未核验其他数量单位或乘数的合约不冒算盈亏。
 

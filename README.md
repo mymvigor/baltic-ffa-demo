@@ -117,7 +117,11 @@ Spot and Price Explorer default to a separate 3M display range, with 1M/3M/6M/1Y
 
 ## Position Management
 
-The sidebar opens one account workbench: Account Overview, Open Positions, Trade Entry, P&L Performance and Trade History. The four top figures are Total P&L, Daily P&L, Realized P&L and Unrealized P&L. Filters are optional and never change opening cost history or whole-account risk.
+The sidebar opens one account workbench: Account Overview, Open Positions, Trade Entry, Account P&L, Contract P&L and Trade History. The four top figures are Total P&L, Daily P&L, Realized P&L and Unrealized P&L. Optional trade-history/export filters never change current positions, account performance, contract charts, opening cost history or whole-account risk.
+
+Account P&L keeps its full-account cumulative curve, daily signed bars and contract ranking. Every open contract automatically has one expanded, full-width combined chart: Total, Realized and Unrealized curves above Daily P&L bars, with a shared date axis. Its compact header shows direction, signed net days, average cost, latest BFA, daily and cumulative P&L, and actual quote/valuation dates. Each chart starts with the first-ever trade in that fixed contract. Open, Close, Reopen, Reverse and verified Settlement events are marked at their end-of-day P&L, not an invented intraday result. Multiple events on the same date are combined on hover.
+
+Fully closed contracts move into the lazy Closed Positions expander. Their unrealized P&L is zero and cumulative realized P&L is retained. Reopening restores the same contract chart and its complete cumulative history. Closed charts end at the final close/settlement instead of showing a long flat tail. All paths reuse a single ledger valuation and quote load; changing history filters does not re-run P&L or recompute each contract independently. No new chart selectors or model calculations are introduced.
 
 Trade Entry is always open. Type or paste multiple Excel rows, search a fixed contract, and click **Save changes** to submit the entire validated batch. There is no 10-second automatic submission. The date defaults to today; quantity starts at 5 days and remembers the last valid input. USD/day TC exposure measured in days has multiplier 1; calendar month days or exchange lot quantities are not silently multiplied into it. Contracts with unverified units or multipliers are rejected.
 
