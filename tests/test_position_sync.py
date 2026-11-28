@@ -129,3 +129,27 @@ def test_no_cape_in_new_choices_existing_records_remain_editable():
     assert 'cape' in catalog # historical metadata is preserved, never deleted
     payload={'edits':event(catalog,'cape-new',Contract=catalog['cape']['search']),'deletes':{}}
     with pytest.raises(ValueError,match='not enabled'):build_batch(empty_book(),payload,catalog,'2026-11-07')
+
+
+def test_save_scopes_cannot_mix_new_history_and_deletion_batches():
+    fixed=quotes();book=empty_book();book['trades']=[trade(1,'Buy',5,100)];store=PrivateStore(book)
+    catalog=contract_catalog(fixed,book['trades']);base=book['trades'][0]
+    history={'edits':{base['id']:{'base':base,'fields':raw_trade(base,catalog),'order':1}},'deletes':{}}
+    new={'edits':event(catalog),'deletes':{}}
+    with pytest.raises(ValueError,match='new transactions only'):sync_batch(store,history,catalog,fixed,'2026-11-07','ffa-positions',scope='entry')
+    with pytest.raises(ValueError,match='original transaction ID'):sync_batch(store,new,catalog,fixed,'2026-11-07','ffa-positions',scope='history')
+    with pytest.raises(ValueError,match='new transactions only'):sync_batch(store,{'edits':{},'deletes':{base['id']:base}},catalog,fixed,'2026-11-07','ffa-positions',scope='entry')
+    assert store.puts==0 and store.book==book
+
+
+def test_history_response_loss_manual_retry_preserves_ids_and_does_not_duplicate():
+    fixed=quotes();book=empty_book();book['trades']=ledger();store=PrivateStore(book);catalog=contract_catalog(fixed,book['trades'])
+    base=book['trades'][0];fields=raw_trade(base,catalog);fields['Price']=90
+    payload={'edits':{base['id']:{'base':base,'fields':fields,'order':1}},'deletes':{}}
+    store.fail='after'
+    with pytest.raises(ConnectionError):sync_batch(store,payload,catalog,fixed,'2026-11-07','ffa-positions',scope='history')
+    saved,sha,batch=sync_batch(store,payload,catalog,fixed,'2026-11-07','ffa-positions',scope='history')
+    assert store.puts==1 and len(saved['trades'])==len(book['trades'])
+    assert {t['id'] for t in saved['trades']}=={t['id'] for t in book['trades']}
+    assert saved['batches'][batch]['kind']=='history'
+    assert calculate(saved['trades'],fixed,'2026-11-07')[0]['Total P&L'].iloc[0]==-40

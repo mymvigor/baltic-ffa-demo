@@ -119,14 +119,34 @@ def validate_changes(before,after,fixed,asof,limit):
         staged=new
 
 
-def sync_batch(store,payload,catalog,fixed,asof,branch):
-    batch_id='edit-'+digest(payload)
+def validate_scope(payload,scope):
+    if scope is None:return
+    if scope not in ('entry','history'):raise ValueError('Unknown save section.')
+    if not isinstance(payload,dict) or not isinstance(payload.get('edits',{}),dict) or not isinstance(payload.get('deletes',{}),dict):
+        raise ValueError('Invalid pending batch.')
+    edits,deletes=payload.get('edits',{}),payload.get('deletes',{})
+    if set(edits)&set(deletes):raise ValueError('A transaction cannot be edited and deleted in the same batch.')
+    if scope=='entry':
+        if deletes or any(not isinstance(e,dict) or e.get('base') is not None for e in edits.values()):
+            raise ValueError('Save Trades accepts new transactions only. Save historical edits in Trade History.')
+    else:
+        if payload.get('settings'):raise ValueError('Account settings are not part of a history edit batch.')
+        for identity,edit in edits.items():
+            base=edit.get('base') if isinstance(edit,dict) else None
+            if not isinstance(base,dict) or base.get('id')!=identity:raise ValueError('History edits must retain the original transaction ID.')
+        for identity,base in deletes.items():
+            if not isinstance(base,dict) or base.get('id')!=identity:raise ValueError('History deletions must retain the original transaction ID.')
+
+
+def sync_batch(store,payload,catalog,fixed,asof,branch,scope=None):
+    validate_scope(payload,scope)
+    batch_id=(scope or 'edit')+'-'+digest(payload)
     remote,sha=load(store,branch)
     if batch_id in remote.get('batches',{}):return remote,sha,batch_id
     local=build_batch(remote,payload,catalog,asof)
     if local==remote:return remote,sha,batch_id
     validate_changes(remote['trades'],local['trades'],fixed,asof,min(remote['settings']['loss_limit'],local['settings']['loss_limit']))
-    local.setdefault('batches',{})[batch_id]={'saved_at':datetime.now(timezone.utc).isoformat(),'kind':'edit'}
+    local.setdefault('batches',{})[batch_id]={'saved_at':datetime.now(timezone.utc).isoformat(),'kind':scope or 'edit'}
     original={t['id'] for t in remote['trades']}
     new_order=[t['id'] for t in local['trades'] if t['id'] not in original]
     def validate(latest,merged):

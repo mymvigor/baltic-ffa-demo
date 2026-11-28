@@ -50,15 +50,15 @@ show()
     assert not app.exception and store.puts==0
     app.run();assert store.puts==0
     payload={'edits':event(catalog),'deletes':{}}
-    app.session_state['request']={'version':'saved-click','attempt':1,'payload':payload}
+    app.session_state['request']={'scope':'entry','version':'saved-click','attempt':1,'payload':payload}
     app.run();assert not app.exception and store.puts==1
     assert app.dataframe and len(store.book['trades'])==1 and len(app.get('plotly_chart'))==4
     app.run();assert store.puts==1 # acknowledged component value cannot resubmit
     store.fail='before'
-    app.session_state['request']={'version':'second-click','attempt':1,'payload':{'edits':event(catalog,'new2'),'deletes':{}}}
+    app.session_state['request']={'scope':'entry','version':'second-click','attempt':1,'payload':{'edits':event(catalog,'new2'),'deletes':{}}}
     app.run();assert not app.exception and len(store.book['trades'])==1
     store.fail=None
-    app.session_state['request']={'version':'second-click','attempt':2,'payload':{'edits':event(catalog,'new2'),'deletes':{}}}
+    app.session_state['request']={'scope':'entry','version':'second-click','attempt':2,'payload':{'edits':event(catalog,'new2'),'deletes':{}}}
     app.run();assert not app.exception and len(store.book['trades'])==2
 
 
@@ -144,9 +144,80 @@ show()
     before=json.loads(app.get('plotly_chart')[-1].proto.spec)
     catalog=contract_catalog(fixed,book['trades'])
     payload={'edits':event(catalog,'reopen',**{'Trade Date':'2026-11-08','Price':70,'Quantity':3,'Fees':1}),'deletes':{}}
-    app.session_state['request']={'version':'reopen-click','attempt':1,'payload':payload};app.run()
+    app.session_state['request']={'scope':'entry','version':'reopen-click','attempt':1,'payload':payload};app.run()
     assert not app.exception and not app.expander and len(app.get('plotly_chart'))==4
     after=json.loads(app.get('plotly_chart')[-1].proto.spec)
     assert after['data'][0]['x'][0]==before['data'][0]['x'][0] # first-ever trade, not just reopen date
     assert after['layout']['uirevision'].split(':')[0]==before['layout']['uirevision'].split(':')[0]
     assert store.puts==1 and len(store.book['trades'])==7
+
+
+def test_history_batch_refreshes_all_pnl_charts_costs_and_export_without_refresh(monkeypatch):
+    from copy import deepcopy
+    from io import BytesIO
+    from ffa.positions import empty_book
+    from ffa.position_sync import raw_trade
+    from test_positions import trade
+    fixed=quotes();smx=fixed.assign(identity='smx',vessel='SMX',product='S11TC',price=fixed.price+10)
+    fixed=pd.concat([fixed,smx],ignore_index=True)
+    pmx={**trade(1,'Buy',5,100),'id':'pmx'}
+    short={**trade(1,'Sell',5,100),'id':'smx-open','contract':'smx','vessel':'SMX','product':'S11TC'}
+    closing={**trade(3,'Buy',2,90),'id':'smx-close','contract':'smx','vessel':'SMX','product':'S11TC'}
+    book=empty_book();book['trades']=[pmx,short,closing];store=PrivateStore(book)
+    @contextmanager
+    def connect(*args):yield store
+    monkeypatch.setattr(ui,'connect',connect)
+    monkeypatch.setattr(ui,'config',lambda:('private/history-save','ffa-positions','reader','writer'))
+    snapshots={};exports={};calls=[];original=ui.calculate
+    def counted(*args,**kwargs):calls.append(1);return original(*args,**kwargs)
+    monkeypatch.setattr(ui,'calculate',counted);ui.valued.clear()
+    def grid(**kw):
+        import streamlit as st
+        scope=kw['data']['mode'];snapshots[scope]=deepcopy(kw['data'])
+        return SimpleNamespace(batch=st.session_state.get('request_'+scope))
+    def download(label,data,**kw):exports['current']=data;return False
+    monkeypatch.setattr(ui,'grid',grid);monkeypatch.setattr(ui.st,'download_button',download)
+    monkeypatch.setattr(ui,'_history_fixture',fixed,raising=False)
+    app=AppTest.from_string("""
+import streamlit as st
+import ffa.position_ui as ui
+@st.fragment
+def show():
+ ui.position_management(lambda *args:ui._history_fixture,lambda:ui._history_fixture.quote_day.max().date(),lambda module:0,lambda:'history-save')
+show()
+""",default_timeout=30).run()
+    assert not app.exception and store.puts==0 and len(calls)==1
+    before=[p.proto.spec for p in app.get('plotly_chart')];assert len(before)==5
+    old_export=exports['current'];catalog=contract_catalog(fixed,book['trades'])
+    a=raw_trade(pmx,catalog);a.update(Price=70,Quantity=10,Fees=2)
+    b=raw_trade(short,catalog);b.update(Price=105,Fees=1)
+    payload={'edits':{'pmx':{'base':pmx,'fields':a,'order':1},'smx-open':{'base':short,'fields':b,'order':2}},'deletes':{'smx-close':closing}}
+    app.session_state['request_history']={'scope':'history','version':'history-click','attempt':1,'payload':payload}
+    app.run()
+    assert not app.exception and store.puts==1 and len(calls)==2
+    assert {t['id'] for t in store.book['trades']}=={'pmx','smx-open'}
+    assert snapshots['history']['ack']['version']=='history-click' and snapshots['entry']['ack'] is None
+    current=app.dataframe[0].value.copy();current['Contract']=current.Contract.str.split(' · ').str[0];current=current.set_index('Contract')
+    assert current.loc['PMX DEC26','Average Cost']==70 and current.loc['PMX DEC26','Quantity']==10
+    assert current.loc['SMX DEC26','Average Cost']==105 and current.loc['SMX DEC26','Quantity']==5
+    assert sum(current['Unrealized P&L'])==175
+    after=[p.proto.spec for p in app.get('plotly_chart')]
+    assert len(after)==5 and all(a!=b for a,b in zip(before,after))
+    def summary(blob):
+        sheet=pd.ExcelFile(BytesIO(blob)).parse('Daily Report')
+        return sheet.dropna(subset='Item').set_index('Item').Value
+    assert summary(old_export())['Closing Cumulative P&L']==-50
+    blob=exports['current']();assert summary(blob)['Closing Cumulative P&L']==172
+    workbook=pd.ExcelFile(BytesIO(blob));history=workbook.parse('P&L History')
+    assert history['Total P&L'].iloc[0]==272 # oldest affected date was recomputed
+    assert len(workbook.parse('Transaction History'))==2
+    app.run();assert store.puts==1 and len(calls)==2 # no automatic retry or stale-widget resubmit
+    # A second historical cost correction changes account risk immediately too.
+    latest=next(t for t in store.book['trades'] if t['id']=='pmx')
+    correction=raw_trade(latest,catalog);correction['Price']=7000
+    app.session_state['request_history']={'scope':'history','version':'risk-correction','attempt':1,
+        'payload':{'edits':{'pmx':{'base':latest,'fields':correction,'order':1}},'deletes':{}}}
+    app.run()
+    assert not app.exception and store.puts==2 and len(calls)==3
+    assert any('Loss limit reached' in message.value for message in app.error)
+    assert summary(exports['current']())['Closing Cumulative P&L']==-69128

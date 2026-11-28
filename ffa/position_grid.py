@@ -21,12 +21,34 @@ export default function({data,parentElement,setStateValue}) {
   const names=['Trade Date','Contract','Side','Price','Quantity','Fees','Notes'];
   const labels=data.catalog, known=new Map(labels.map(c=>[c.search,c]));
   const records=new Map(data.trades.map(t=>[t.id,t]));
-  const storeKey='ffa-position-draft-v2:'+data.account;
+  const legacyKey='ffa-position-draft-v2:'+data.account;
+  const storeKey='ffa-position-draft-v3:'+data.account+':'+data.mode;
+  const quantityKey=legacyKey+':quantity';
   let tab;
   try { tab=sessionStorage.getItem('ffa-position-tab');if(!tab){tab=crypto.randomUUID();sessionStorage.setItem('ffa-position-tab',tab);} }
   catch {tab=crypto.randomUUID();}
-  let local=null, storageFailed=false, locked=false, sentVersion=null, nextRetry=0,attempt=0;
+  let local=null, storageFailed=false, locked=false,attempt=0;
   const fresh=()=>({version:crypto.randomUUID(),edits:{},deletes:{},blankRows:[],updated:Date.now(),lease:{owner:tab,until:0}});
+  // Split legacy shared drafts once, preserving IDs and unfinished fields.
+  // Previously authorized background retries are deliberately not migrated.
+  try {
+    const old=JSON.parse(localStorage.getItem(legacyKey));
+    if(old&&!old.migrated_to_v3){
+      const parts={};
+      for(const mode of ['entry','history']){
+        const part=fresh();part.edits=Object.fromEntries(Object.entries(old.edits||{}).filter(([id,e])=>mode==='entry'?!e.base:!!e.base));
+        if(mode==='entry'){part.blankRows=old.blankRows||[];if(old.settings)part.settings=old.settings;}
+        else part.deletes=old.deletes||{};
+        parts[mode]=part;
+      }
+      local=parts[data.mode];
+      for(const mode of ['entry','history']){
+        const target='ffa-position-draft-v3:'+data.account+':'+mode;
+        if(!localStorage.getItem(target))localStorage.setItem(target,JSON.stringify(parts[mode]));
+      }
+      localStorage.setItem(legacyKey,JSON.stringify({...old,migrated_to_v3:true}));
+    }
+  }catch{storageFailed=true;}
   const read=()=>{try{const v=JSON.parse(localStorage.getItem(storeKey));return v&&v.edits&&v.deletes?v:(local||fresh());}catch{return local||fresh();}};
   let draft=read();
   const persist=()=>{local=draft;try{localStorage.setItem(storeKey,JSON.stringify(draft));}catch{storageFailed=true;}};
@@ -34,7 +56,7 @@ export default function({data,parentElement,setStateValue}) {
   const isLocked=()=>locked||(draft.savingUntil||0)>Date.now();
   const pending=()=>Object.keys(draft.edits).length+Object.keys(draft.deletes).length+(draft.settings?1:0);
   const raw=t=>({'Trade Date':t.date,'Contract':labels.find(c=>c.contract===t.contract)?.search||t.label,'Side':t.side,'Price':t.price,'Quantity':t.days,'Fees':t.fees||0,'Notes':t.notes||''});
-  const rememberedQuantity=()=>{try{const n=Number(localStorage.getItem(storeKey+':quantity'));if(Number.isFinite(n)&&n>0)return n;}catch{}return data.last_quantity||5;};
+  const rememberedQuantity=()=>{try{const n=Number(localStorage.getItem(quantityKey));if(Number.isFinite(n)&&n>0)return n;}catch{}return data.last_quantity||5;};
   const blank=()=>({'Trade Date':data.today,'Contract':'','Side':'Buy','Price':'','Quantity':rememberedQuantity(),'Fees':'','Notes':''});
   const normalized=x=>String(x).toUpperCase().replace(/[^A-Z0-9]/g,'');
   const contract=x=>known.get(x)||(()=>{const a=labels.filter(c=>normalized(x)===normalized(c.vessel+' '+c.label.split(' · ')[0]));return a.length===1?a[0]:null;})();
@@ -52,16 +74,18 @@ export default function({data,parentElement,setStateValue}) {
   }return out;};
   const payload=()=>({edits:draft.edits,deletes:draft.deletes,...(draft.settings?{settings:draft.settings}:{})});
   if(data.ack&&data.ack.version===draft.version){draft=fresh();persist();}
-  if(data.settings_change&&data.settings_change.value!==data.settings_change.base){
+  if(data.mode==='entry'&&data.settings_change&&data.settings_change.value!==data.settings_change.base){
     const desired=data.settings_change;
     if(!draft.settings||draft.settings.value!==desired.value){draft.settings=desired;draft.version=crypto.randomUUID();draft.updated=Date.now();persist();}
   }
   host.replaceChildren();
   const status=document.createElement('div');status.className='status';
   const error=document.createElement('div');error.className='error';
-  const saveButton=document.createElement('button');saveButton.className='save';saveButton.textContent='Save changes';
+  const saveButton=document.createElement('button');saveButton.className='save';saveButton.textContent=data.mode==='entry'?'Save Trades':'Save Changes';
   const addButton=document.createElement('button');addButton.className='add';addButton.textContent='Add row';
-  if(data.mode==='entry'){const toolbar=document.createElement('div');toolbar.className='toolbar';toolbar.append(status);const actions=document.createElement('div');actions.className='actions';actions.append(addButton);actions.append(saveButton);toolbar.append(actions);host.append(toolbar);}
+  const toolbar=document.createElement('div');toolbar.className='toolbar';toolbar.append(status);const actions=document.createElement('div');actions.className='actions';
+  if(data.mode==='entry')actions.append(addButton);actions.append(saveButton);toolbar.append(actions);
+  if(data.mode==='entry')host.append(toolbar);
   const scroll=document.createElement('div');scroll.className='scroll';host.append(scroll);
   const table=document.createElement('table');scroll.append(table);
   const head=document.createElement('thead');table.append(head);
@@ -72,19 +96,20 @@ export default function({data,parentElement,setStateValue}) {
   const list=document.createElement('datalist');list.id='contracts-'+crypto.randomUUID();host.append(list);
   for(const c of labels){const option=document.createElement('option');option.value=c.search;list.append(option);}
   host.append(error);
+  if(data.mode==='history')host.append(toolbar);
   if(data.mode==='entry'){
-    const hint=document.createElement('div');hint.className='hint';hint.textContent='Paste rows from Excel, then Save changes to submit the batch. Quantity is in days for USD/day TC contracts.';host.append(hint);
+    const hint=document.createElement('div');hint.className='hint';hint.textContent='Paste rows from Excel, then Save Trades to submit this batch. Quantity is in days for USD/day TC contracts.';host.append(hint);
   }
   const rowNodes=new Map();let entryRows=[];
   const notify=()=>window.dispatchEvent(new CustomEvent('ffa-position-draft',{detail:storeKey}));
-  const change=()=>{draft.version=crypto.randomUUID();draft.updated=Date.now();draft.authorizedVersion=null;draft.attempt=0;draft.retryAt=0;draft.savingUntil=0;sentVersion=null;nextRetry=0;attempt=0;persist();notify();refreshStatus();};
+  const change=()=>{draft.version=crypto.randomUUID();draft.updated=Date.now();draft.attempt=0;draft.savingUntil=0;attempt=0;persist();notify();refreshStatus();};
   const rowFields=tr=>Object.fromEntries(names.map(n=>[n,tr.querySelector('[data-field="'+n+'"]')?.value??'']));
   const saveRow=tr=>{
     draft=read();if(!owns()||isLocked())return;
     const id=tr.dataset.id;const original=records.get(id)||null;const old=draft.edits[id];const values=rowFields(tr);
     const quantity=numeric(values.Quantity);
     if(Number.isFinite(quantity)&&quantity>0){
-      try{localStorage.setItem(storeKey+':quantity',String(quantity));}catch{}
+      try{localStorage.setItem(quantityKey,String(quantity));}catch{}
       for(const other of entryRows){if(other!==id&&!draft.edits[other]){const input=rowNodes.get(other)?.querySelector('[data-field="Quantity"]');if(input)input.value=String(quantity);}}
     }
     if(original&&names.every(n=>String(raw(original)[n]??'')===String(values[n]??''))){delete draft.edits[id];}
@@ -124,7 +149,7 @@ export default function({data,parentElement,setStateValue}) {
     }
     const td=document.createElement('td');td.className='row-actions';tr.append(td);const undo=document.createElement('button');undo.textContent=history?'Delete':'×';undo.title=history?'Delete transaction':'Remove pending row';td.append(undo);
     undo.addEventListener('click',()=>{draft=read();if(!owns()||isLocked())return;
-      if(history){if(!window.confirm('Delete this recorded transaction? P&L will be recalculated.'))return;draft.deletes[id]=draft.edits[id]?.base||records.get(id);delete draft.edits[id];tr.classList.add('deleted');}
+      if(history){if(!window.confirm('Delete this recorded transaction? P&L will be recalculated.'))return;const base=draft.edits[id]?.base||draft.deletes[id]||records.get(id);if(!base)return;draft.deletes[id]=base;delete draft.edits[id];tr.classList.add('deleted');}
       else{delete draft.edits[id];draft.blankRows=(draft.blankRows||[]).filter(k=>k!==id);entryRows=entryRows.filter(k=>k!==id);rowNodes.delete(id);tr.remove();if(!entryRows.length)addBlankRow();}
       change();
     });
@@ -141,21 +166,20 @@ export default function({data,parentElement,setStateValue}) {
       if(!entryRows.length)addBlankRow();
     }else{
       const ids=new Set([...data.visible,...Object.entries(draft.edits).filter(([id,e])=>e.base).map(([id])=>id),...Object.keys(draft.deletes)]);
-      for(const id of ids){const t=records.get(id);if(t)renderRow(id,draft.edits[id]?.fields||raw(t),true);}
+      for(const id of ids){const t=records.get(id)||draft.edits[id]?.base||draft.deletes[id];if(t)renderRow(id,draft.edits[id]?.fields||raw(t),true);}
     }
     refreshStatus();
   }
   function refreshStatus(){
     const errors=issues();const blocked=new Set(errors.map(e=>e[0]));
     for(const [id,tr] of rowNodes){tr.querySelectorAll('input,select').forEach(input=>{input.classList.toggle('bad',blocked.has(id));input.disabled=isLocked()||!owns()||!!draft.deletes[id];});}
-    if(data.mode!=='entry')return;
     addButton.disabled=isLocked()||!owns();
     saveButton.disabled=!pending()||!data.writable||errors.length>0||isLocked()||!owns();
     scroll.classList.toggle('locked',isLocked()||!owns());
     if(isLocked())status.textContent='Saving...';
-    else if(!owns())status.textContent='Pending · This browser draft is open in another tab';
-    else if(pending())status.textContent=data.failure&&data.failure.version===draft.version?'Save failed':'Pending';
-    else status.textContent=data.last_sync?'Saved · '+data.last_sync:'Pending';
+    else if(!owns())status.textContent='Unsaved Changes · This browser draft is open in another tab';
+    else if(pending())status.textContent=data.failure&&data.failure.version===draft.version?'Save failed · Unsaved Changes':'Unsaved Changes';
+    else status.textContent=data.last_sync?'Saved · '+data.last_sync:data.mode==='entry'?'No pending trades':'No pending changes';
     error.textContent=storageFailed?'Browser storage is unavailable. Keep this tab open.':errors.length?errors[0][1]+' Batch not saved.':
       data.failure&&data.failure.version===draft.version?data.failure.message:pending()&&!data.writable?'Private write permission is not configured. The pending batch remains in this browser.':'';
   }
@@ -163,10 +187,9 @@ export default function({data,parentElement,setStateValue}) {
   addButton.addEventListener('click',()=>{draft=read();if(!owns()||isLocked())return;addBlankRow();refreshStatus();});
   function submit(){
     draft=read();if(!owns()||isLocked()||!pending()||!data.writable||issues().length)return;
-    draft.authorizedVersion=draft.version;
-    locked=true;draft.savingUntil=Date.now()+180000;draft.submittedSession=data.session;draft.attempt=(draft.attempt||0)+1;persist();sentVersion=draft.version;attempt=draft.attempt;
+    locked=true;draft.savingUntil=Date.now()+180000;draft.submittedSession=data.session;draft.attempt=(draft.attempt||0)+1;persist();attempt=draft.attempt;
     notify();refreshStatus();
-    setStateValue('batch',{version:draft.version,payload:payload(),attempt,submitted_at:Date.now()});
+    setStateValue('batch',{scope:data.mode,version:draft.version,payload:payload(),attempt,submitted_at:Date.now()});
   }
   saveButton.addEventListener('click',submit);
   const external=e=>{if(e.detail&&e.detail!==storeKey)return;draft=read();if(data.mode==='history')refreshStatus();else refreshStatus();};
@@ -175,19 +198,17 @@ export default function({data,parentElement,setStateValue}) {
   let leaseTime=0;
   const timer=setInterval(()=>{
     draft=read();
-    if(data.mode!=='entry'){refreshStatus();return;}
     if(!owns()){refreshStatus();return;}
-    if(draft.authorizedVersion===draft.version&&draft.attempt>0&&draft.submittedSession!==data.session){
-      locked=false;draft.savingUntil=0;draft.submittedSession=data.session;draft.retryAt=Date.now()+1000;persist();
+    if(draft.savingUntil&&draft.submittedSession!==data.session){
+      locked=false;draft.savingUntil=0;draft.submittedSession=data.session;persist();
     }
     if(Date.now()-leaseTime>5000){draft.lease={owner:tab,until:Date.now()+15000};persist();leaseTime=Date.now();}
     if(data.failure&&data.failure.version===draft.version&&data.failure.attempt===draft.attempt&&draft.failedAttempt!==draft.attempt){
-      locked=false;draft.savingUntil=0;draft.failedAttempt=draft.attempt;draft.retryAt=Date.now()+Math.min(120000,5000*2**Math.min(draft.attempt||0,4));persist();
+      locked=false;draft.savingUntil=0;draft.failedAttempt=draft.attempt;persist();
     }
-    // Retry only the unchanged batch already authorized by a Save click.
-    if(draft.authorizedVersion!==draft.version||!draft.retryAt||!pending()||!data.writable||issues().length||isLocked()||Date.now()<(draft.retryAt||0)){refreshStatus();return;}
-    if(sentVersion===draft.version&&!data.failure)return;
-    submit();
+    if(locked&&draft.savingUntil<=Date.now()){locked=false;draft.savingUntil=0;persist();}
+    // Local lease/status maintenance only. A timer never sends a batch.
+    refreshStatus();
   },500);
   return ()=>{clearInterval(timer);window.removeEventListener('ffa-position-draft',external);window.removeEventListener('storage',storage);};
 }

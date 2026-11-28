@@ -147,10 +147,11 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     st.subheader('Trade Entry')
     last_quantity=book['trades'][-1]['days'] if book['trades'] else 5
     common={'account':account,'session':state.setdefault('session',uuid.uuid4().hex),'today':str(today),'trades':book['trades'],'catalog':list(catalog.values()),'writable':bool(repo and reader and writer and not synthetic),
-            'last_quantity':last_quantity,'last_sync':state.get('last_sync'),'ack':state.get('ack'),'failure':state.get('failure'),
+            'last_quantity':last_quantity,'last_sync':state.get('last_sync'),
             'settings_change':{'base':book['settings']['loss_limit'],'value':float(limit)} if limit!=book['settings']['loss_limit'] else None}
     entry_catalog=[c for c in catalog.values() if c['vessel'] in POSITION_VESSELS]
-    entry=grid(data={**common,'catalog':entry_catalog,'mode':'entry','visible':[]},key=key+'_entry',default={'batch':None},on_batch_change=lambda:None)
+    acks=state.setdefault('acks',{});failures=state.setdefault('failures',{})
+    entry=grid(data={**common,'ack':acks.get('entry'),'failure':failures.get('entry'),'catalog':entry_catalog,'mode':'entry','visible':[]},key=key+'_entry',default={'batch':None},on_batch_change=lambda:None)
     account_pnl(history,positions,key)
     contract_pnl(paths,book['trades'],key)
     st.subheader('Trade History')
@@ -160,24 +161,30 @@ def position_management(loader,latest,refresh,data_version=None,synthetic=False)
     selected=[t for t in book['trades'] if (not ships or t['vessel'] in ships) and (not contracts or t['contract'] in contracts)]
     visible=[t['id'] for t in reversed(selected) if pd.Timestamp(start)<=pd.Timestamp(t['date'])<=pd.Timestamp(end)]
     if not filters:visible=visible[:50]
-    grid(data={**common,'mode':'history','visible':visible},key=key+'_history',default={'batch':None},on_batch_change=lambda:None)
+    history_grid=grid(data={**common,'ack':acks.get('history'),'failure':failures.get('history'),'mode':'history','visible':visible},key=key+'_history',default={'batch':None},on_batch_change=lambda:None)
     download=lambda trades=deepcopy(book['trades']),quotes=fixed,a=start,b=end,v=tuple(ships),c=tuple(contracts):report(trades,quotes,a,b,v,c)
     st.download_button('Export Excel',download,file_name=f'FFA_Report_{end}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=key+'_download',on_click='ignore')
-    request=entry.batch
-    if request and request.get('version')!=state.get('ack',{}).get('version'):
+    handled=state.setdefault('section_handled',{});updated=False
+    for scope,result in (('entry',entry),('history',history_grid)):
+        request=result.batch
+        # Ignore a legacy component's shared batch. A new section-specific
+        # Save click is required; no old widget state can trigger a write.
+        if not request or request.get('scope')!=scope or request.get('version')==acks.get(scope,{}).get('version'):continue
         event=(request.get('version'),request.get('attempt'))
-        if state.get('handled')!=event:
-            state['handled']=event
+        if handled.get(scope)!=event:
+            handled[scope]=event
             if common['writable']:
                 try:
-                    with connect(repo,writer) as storage:saved,sha,batch_id=sync_batch(storage,request['payload'],catalog,fixed,max(asof,pd.Timestamp(today)),branch)
-                    state.update(book=saved,sha=sha,last_sync=datetime.now(timezone.utc).strftime('%d %b %H:%M:%S UTC'),ack={'version':request['version'],'batch_id':batch_id})
-                    state.pop('failure',None)
+                    with connect(repo,writer) as storage:saved,sha,batch_id=sync_batch(storage,request['payload'],catalog,fixed,max(asof,pd.Timestamp(today)),branch,scope=scope)
+                    state.update(book=saved,sha=sha,last_sync=datetime.now(timezone.utc).strftime('%d %b %H:%M:%S UTC'))
+                    acks[scope]={'version':request['version'],'batch_id':batch_id}
+                    failures.pop(scope,None)
                 except Exception as exc:
-                    message=str(exc) if isinstance(exc,(ValueError,Conflict)) else 'Private storage is unavailable. The browser batch is retained and will retry automatically.'
-                    state['failure']={'version':request['version'],'attempt':request.get('attempt'),'message':message}
+                    message=str(exc) if isinstance(exc,(ValueError,Conflict)) else 'Private storage is unavailable. Your changes are retained. Click this section’s save button to retry.'
+                    failures[scope]={'version':request['version'],'attempt':request.get('attempt'),'message':message}
                     if isinstance(exc,Conflict):
                         try:
                             with connect(repo,reader) as storage:state['book'],state['sha']=load(storage,branch)
                         except Exception:pass
-                rerender()
+                updated=True
+    if updated:rerender()
